@@ -2,7 +2,6 @@
 
 // ─────────────────────────────────────────────
 //  Bot Transportes Regis — Railway (Webhook)
-//  Fix: sin polling, sin conflictos de deploy
 // ─────────────────────────────────────────────
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -11,7 +10,7 @@ const express     = require('express');
 
 // ── VARIABLES DE ENTORNO ─────────────────────
 const TOKEN       = process.env.BOT_TOKEN;
-const WEBHOOK_URL = process.env.WEBHOOK_URL;   // Ej: https://tu-app.up.railway.app
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const PORT        = process.env.PORT || 3000;
 
 const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_TELEGRAM_ID || '')
@@ -20,23 +19,21 @@ const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_TELEGRAM_
 const SHEET_BOT    = '1i7uciYXLNuZ-DPxE8H0TAQyuegqVzegE751tUNhi7Qc';
 const SHEET_DIESEL = '1tEmPW1BGE7MgMXD5iOsLwq8G46GxKkT8sRuqBkdFUOk';
 
-// ── BOT EN MODO WEBHOOK (sin polling) ────────
+// ── BOT EN MODO WEBHOOK ───────────────────────
 const bot = new TelegramBot(TOKEN, { webHook: false });
 
-// ── SERVIDOR EXPRESS PARA RECIBIR WEBHOOK ────
+// ── SERVIDOR EXPRESS ──────────────────────────
 const app = express();
 app.use(express.json());
 
-// Railway hace health check en /
 app.get('/', (req, res) => res.send('🚛 Bot Transportes Regis activo'));
 
-// Telegram manda updates a esta ruta
 app.post(`/bot${TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
-// ── GOOGLE SHEETS CLIENT (singleton) ─────────
+// ── GOOGLE SHEETS CLIENT ──────────────────────
 let _sheetsClient = null;
 function getSheetsClient() {
   if (_sheetsClient) return _sheetsClient;
@@ -49,8 +46,12 @@ function getSheetsClient() {
   return _sheetsClient;
 }
 
-// ── HELPERS GENERALES ─────────────────────────
-function isAdmin(chatId) { return ADMIN_IDS.includes(String(chatId)); }
+// ── HELPERS ───────────────────────────────────
+function isAdmin(chatId) {
+  const result = ADMIN_IDS.includes(String(chatId));
+  console.log(`isAdmin check — chatId: ${chatId} | ADMIN_IDS: [${ADMIN_IDS.join(',')}] | resultado: ${result}`);
+  return result;
+}
 
 function notificarAdmins(mensaje, opciones = {}) {
   ADMIN_IDS.forEach(id => {
@@ -276,6 +277,14 @@ function generarResumenGastos(d, anticipo, total, diferencia) {
 // ─────────────────────────────────────────────
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
+
+  // LOG DE DIAGNÓSTICO — puedes borrar estas líneas después
+  console.log(`\n=== /start ===`);
+  console.log(`chatId recibido: "${chatId}" (tipo: ${typeof chatId})`);
+  console.log(`ADMIN_IDS configurados: [${ADMIN_IDS.map(id => `"${id}"`).join(', ')}]`);
+  console.log(`¿Es admin?: ${isAdmin(chatId)}`);
+  console.log(`==============\n`);
+
   if (isAdmin(chatId)) {
     bot.sendMessage(chatId, `👋 *Bienvenido Admin!*\n\n¿Qué quieres hacer?`, { parse_mode: 'Markdown', ...MENU_ADMIN });
   } else {
@@ -416,7 +425,6 @@ bot.on('callback_query', async (query) => {
 
   try {
 
-    // ── Cancelar cualquier flujo ──
     if (data === 'cancelar') {
       userState[chatId] = { estado: null };
       if (isAdmin(chatId)) {
@@ -426,7 +434,6 @@ bot.on('callback_query', async (query) => {
       }
     }
 
-    // ── Confirmar gastos — guardar ──
     if (data === 'gastos_confirmar') {
       const st = userState[chatId];
       if (!st || st.estado !== 'gastos_revision') return;
@@ -471,7 +478,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Repetir gastos ──
     if (data === 'gastos_repetir') {
       userState[chatId] = { estado: 'gastos', paso: 0, datos: {} };
       bot.sendMessage(chatId,
@@ -480,7 +486,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Confirmar carga — guardar ──
     if (data === 'carga_confirmar') {
       const st = userState[chatId];
       if (!st || st.estado !== 'carga_revision') return;
@@ -510,7 +515,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Repetir carga ──
     if (data === 'carga_repetir') {
       userState[chatId] = { estado: 'carga', paso: 0, datos: {} };
       bot.sendMessage(chatId,
@@ -519,7 +523,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Operador: Confirmar viaje ──
     if (data === 'confirmar_viaje') {
       const ops      = await getOperadores();
       const operador = ops[String(chatId)];
@@ -568,7 +571,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Operador: Iniciar gastos ──
     if (data === 'iniciar_gastos') {
       const ops      = await getOperadores();
       const operador = ops[String(chatId)];
@@ -580,7 +582,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Operador: Iniciar carga ──
     if (data === 'iniciar_carga') {
       const ops      = await getOperadores();
       const operador = ops[String(chatId)];
@@ -592,7 +593,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Admin: Ver viajes ──
     if (data === 'ver_viajes') {
       if (!isAdmin(chatId)) return;
       const viajes = await getViajes();
@@ -612,7 +612,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Admin: Nuevos viajes ──
     if (data === 'nuevos_viajes') {
       if (!isAdmin(chatId)) return;
       userState[chatId] = { estado: 'esperando_viajes' };
@@ -622,7 +621,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Admin: Ver operadores ──
     if (data === 'ver_operadores') {
       if (!isAdmin(chatId)) return;
       const ops = await getOperadores();
@@ -637,7 +635,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Admin: Iniciar diesel ──
     if (data === 'iniciar_diesel') {
       if (!isAdmin(chatId)) return;
       userState[chatId] = { estado: 'diesel', paso: 0, datos: {} };
@@ -647,7 +644,6 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // ── Admin: Ver resumen ──
     if (data === 'ver_resumen') {
       if (!isAdmin(chatId)) return;
       const ops         = await getOperadores();
@@ -667,7 +663,7 @@ bot.on('callback_query', async (query) => {
 });
 
 // ─────────────────────────────────────────────
-//  MENSAJES DE TEXTO (flujos paso a paso)
+//  MENSAJES DE TEXTO
 // ─────────────────────────────────────────────
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -677,7 +673,6 @@ bot.on('message', async (msg) => {
 
   try {
 
-    // ── Admin: Agregar viajes ──
     if (estado === 'esperando_viajes') {
       if (msg.text.toLowerCase() === 'fin') {
         userState[chatId] = { estado: null };
@@ -702,7 +697,6 @@ bot.on('message', async (msg) => {
         { parse_mode: 'Markdown' });
     }
 
-    // ── Operador: Remisión y caja ──
     if (estado === 'esperando_remision') {
       const { viaje, operador: op, archivos } = userState[chatId];
 
@@ -742,7 +736,6 @@ bot.on('message', async (msg) => {
       return;
     }
 
-    // ── Operador: Gastos paso a paso ──
     if (estado === 'gastos') {
       const paso  = userState[chatId].paso;
       const campo = PREGUNTAS_GASTOS[paso].campo;
@@ -775,7 +768,6 @@ bot.on('message', async (msg) => {
       return;
     }
 
-    // ── Operador: Carga paso a paso ──
     if (estado === 'carga') {
       const paso  = userState[chatId].paso;
       const campo = PREGUNTAS_CARGA[paso].campo;
@@ -811,7 +803,6 @@ bot.on('message', async (msg) => {
       return;
     }
 
-    // ── Admin: Diesel paso a paso ──
     if (estado === 'diesel') {
       const paso  = userState[chatId].paso;
       const campo = PREGUNTAS_DIESEL[paso].campo;
@@ -862,7 +853,7 @@ bot.on('message', async (msg) => {
 });
 
 // ─────────────────────────────────────────────
-//  FOTOS (remisión y caja)
+//  FOTOS
 // ─────────────────────────────────────────────
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
@@ -881,7 +872,7 @@ bot.on('photo', async (msg) => {
 });
 
 // ─────────────────────────────────────────────
-//  MANEJO DE ERRORES GLOBALES (evita crashes)
+//  ERRORES GLOBALES
 // ─────────────────────────────────────────────
 bot.on('error', (error) => {
   console.error('Bot error:', error.message);
@@ -903,21 +894,18 @@ app.listen(PORT, async () => {
   console.log(`👥 Administradores configurados: ${ADMIN_IDS.length}`);
   ADMIN_IDS.forEach(id => console.log(`   - Admin ID: ${id}`));
 
-  // Registrar el webhook con Telegram
   if (!WEBHOOK_URL) {
     console.error('❌ ERROR: Falta la variable de entorno WEBHOOK_URL');
-    console.error('   Añádela en Railway: WEBHOOK_URL=https://tu-app.up.railway.app');
     return;
   }
 
   try {
-    // Primero limpiar cualquier webhook anterior
     await bot.deleteWebHook();
     await new Promise(r => setTimeout(r, 1000));
-
     const webhookFull = `${WEBHOOK_URL}/bot${TOKEN}`;
+    console.log(`🔗 Registrando webhook: ${webhookFull}`);
     await bot.setWebHook(webhookFull);
-    console.log(`✅ Webhook registrado: ${webhookFull}`);
+    console.log(`✅ Webhook registrado correctamente`);
   } catch (e) {
     console.error('❌ Error registrando webhook:', e.message);
   }
