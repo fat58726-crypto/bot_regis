@@ -4,8 +4,12 @@ const { google } = require('googleapis');
 
 const TOKEN = process.env.BOT_TOKEN;
 
+// ── CORRECCIÓN #1: Limpieza robusta de ADMIN_IDS
+// Se eliminan espacios, saltos de línea, y el símbolo = que puede colarse en Railway
 const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_TELEGRAM_ID || '')
-  .split(',').map(s => s.trim()).filter(s => s.length > 0);
+  .split(',')
+  .map(s => s.trim().replace(/[^0-9]/g, ''))  // solo deja números
+  .filter(s => s.length > 0);
 
 function isAdmin(chatId) { return ADMIN_IDS.includes(String(chatId)); }
 
@@ -268,19 +272,23 @@ const MENU_CONFIRMAR_CARGA = {
 // ── COMANDO /start ────────────────────────────────────────
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
+
+  // ── CORRECCIÓN #2: Admin siempre ve menú admin, aunque esté en la hoja de operadores
   if (isAdmin(chatId)) {
-    bot.sendMessage(chatId, `👋 *Bienvenido Admin!*\n\n¿Qué quieres hacer?`, { parse_mode: 'Markdown', ...MENU_ADMIN });
+    return bot.sendMessage(chatId,
+      `👋 *Bienvenido Admin!*\n\n¿Qué quieres hacer?`,
+      { parse_mode: 'Markdown', ...MENU_ADMIN });
+  }
+
+  const ops      = await getOperadores();
+  const operador = ops[String(chatId)];
+  if (operador) {
+    bot.sendMessage(chatId,
+      `👋 Hola *${operador.nombre}* 🚛\n\n¿Qué necesitas?\n\n_Si algo falla escribe /reset_`,
+      { parse_mode: 'Markdown', ...MENU_OPERADOR });
   } else {
-    const ops      = await getOperadores();
-    const operador = ops[String(chatId)];
-    if (operador) {
-      bot.sendMessage(chatId,
-        `👋 Hola *${operador.nombre}* 🚛\n\n¿Qué necesitas?\n\n_Si algo falla escribe /reset_`,
-        { parse_mode: 'Markdown', ...MENU_OPERADOR });
-    } else {
-      bot.sendMessage(chatId,
-        `👋 Bienvenido al Bot de Transportes Regis 🚛\n\nPrimero regístrate con tu nombre y número de tracto:\n\n/registrar NOMBRE TRACTO\n\nEjemplo:\n/registrar Rafael 9`);
-    }
+    bot.sendMessage(chatId,
+      `👋 Bienvenido al Bot de Transportes Regis 🚛\n\nPrimero regístrate con tu nombre y número de tracto:\n\n/registrar NOMBRE TRACTO\n\nEjemplo:\n/registrar Rafael 9`);
   }
 });
 
@@ -289,19 +297,34 @@ bot.onText(/\/reset/, async (msg) => {
   const chatId = msg.chat.id;
   userState[chatId] = { estado: null };
   if (isAdmin(chatId)) {
-    bot.sendMessage(chatId, '🔄 Estado reiniciado', MENU_ADMIN);
-  } else {
-    const ops      = await getOperadores();
-    const operador = ops[String(chatId)];
-    if (operador) {
-      bot.sendMessage(chatId, '🔄 Listo, ¿qué necesitas?', { parse_mode: 'Markdown', ...MENU_OPERADOR });
-    }
+    return bot.sendMessage(chatId, '🔄 Estado reiniciado.', { parse_mode: 'Markdown', ...MENU_ADMIN });
   }
+  const ops      = await getOperadores();
+  const operador = ops[String(chatId)];
+  if (operador) {
+    bot.sendMessage(chatId, '🔄 Listo, ¿qué necesitas?', { parse_mode: 'Markdown', ...MENU_OPERADOR });
+  }
+});
+
+// ── CORRECCIÓN #3: Comando /miadmin — para que el admin vea su ID en cualquier momento
+bot.onText(/\/miadmin/, (msg) => {
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId,
+    `🔎 Tu Telegram ID es: \`${chatId}\`\n\nAdmin reconocido: *${isAdmin(chatId) ? 'SÍ ✅' : 'NO ❌'}*`,
+    { parse_mode: 'Markdown' });
 });
 
 // ── COMANDO /registrar ────────────────────────────────────
 bot.onText(/\/registrar (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  // ── CORRECCIÓN #4: Admins no pueden registrarse como operadores accidentalmente
+  if (isAdmin(chatId)) {
+    return bot.sendMessage(chatId,
+      `⚠️ Eres administrador, no necesitas registrarte como operador.\n\n¿Qué necesitas?`,
+      { parse_mode: 'Markdown', ...MENU_ADMIN });
+  }
+
   const parts  = match[1].trim().split(' ');
   if (parts.length < 2) {
     return bot.sendMessage(chatId, '❌ Ejemplo correcto:\n/registrar Rafael 9');
@@ -743,7 +766,6 @@ bot.on('message', async (msg) => {
       userState[chatId].paso = sig;
       bot.sendMessage(chatId, PREGUNTAS_GASTOS[sig].pregunta, BTN_CANCELAR);
     } else {
-      // Todas las preguntas respondidas — mostrar resumen para confirmar
       const d          = userState[chatId].datos;
       const total      = ['comida','aguas','casetas','pension','federales','otros']
         .reduce((s, k) => s + parsearNumero(d[k]), 0);
@@ -779,7 +801,6 @@ bot.on('message', async (msg) => {
       userState[chatId].paso = sig;
       bot.sendMessage(chatId, PREGUNTAS_CARGA[sig].pregunta, BTN_CANCELAR);
     } else {
-      // Todas las preguntas respondidas — mostrar resumen para confirmar
       const d     = userState[chatId].datos;
       const total = parsearNumero(d.comida) + parsearNumero(d.aguas);
 
