@@ -11,7 +11,7 @@ function isAdmin(chatId) { return ADMIN_IDS.includes(String(chatId)); }
 
 function notificarAdmins(mensaje, opciones = {}) {
   ADMIN_IDS.forEach(id => {
-    bot.sendMessage(id, mensaje, opciones).catch(e =>
+    bot.sendMessage(id, mensaje, opciones).catch(e => 
       console.error(`No se pudo notificar admin ${id}:`, e.message));
   });
 }
