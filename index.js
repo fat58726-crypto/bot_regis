@@ -4,11 +4,10 @@ const { google } = require('googleapis');
 
 const TOKEN = process.env.BOT_TOKEN;
 
-// ── CORRECCIÓN #1: Limpieza robusta de ADMIN_IDS
-// Se eliminan espacios, saltos de línea, y el símbolo = que puede colarse en Railway
+// Limpieza robusta de ADMIN_IDS — elimina =, espacios, saltos de línea
 const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_TELEGRAM_ID || '')
   .split(',')
-  .map(s => s.trim().replace(/[^0-9]/g, ''))  // solo deja números
+  .map(s => s.trim().replace(/[^0-9]/g, ''))
   .filter(s => s.length > 0);
 
 function isAdmin(chatId) { return ADMIN_IDS.includes(String(chatId)); }
@@ -119,6 +118,23 @@ async function getRows(sheetId, tab) {
     range: `${tab}!A1:Z1000`,
   });
   return res.data.values || [];
+}
+
+// Crea la pestaña si no existe y pone encabezados
+async function ensureTab(sheetId, tabName, headers) {
+  const sheets = getSheetsClient();
+  const meta   = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
+  const existe = meta.data.sheets.find(s => s.properties.title === tabName);
+  if (!existe) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: sheetId,
+      resource: { requests: [{ addSheet: { properties: { title: tabName } } }] }
+    });
+    await appendRow(sheetId, tabName, headers);
+  } else {
+    const rows = await getRows(sheetId, tabName);
+    if (rows.length === 0) await appendRow(sheetId, tabName, headers);
+  }
 }
 
 async function getOperadores() {
@@ -249,31 +265,70 @@ function generarResumenGastos(d, anticipo, total, diferencia) {
 
 const MENU_CONFIRMAR_GASTOS = {
   reply_markup: {
-    inline_keyboard: [
-      [
-        { text: '✅ Sí, guardar',   callback_data: 'gastos_confirmar' },
-        { text: '❌ No, repetir',   callback_data: 'gastos_repetir'   },
-      ]
-    ]
+    inline_keyboard: [[
+      { text: '✅ Sí, guardar', callback_data: 'gastos_confirmar' },
+      { text: '❌ No, repetir', callback_data: 'gastos_repetir'   },
+    ]]
   }
 };
 
 const MENU_CONFIRMAR_CARGA = {
   reply_markup: {
-    inline_keyboard: [
-      [
-        { text: '✅ Sí, guardar',   callback_data: 'carga_confirmar' },
-        { text: '❌ No, repetir',   callback_data: 'carga_repetir'   },
-      ]
-    ]
+    inline_keyboard: [[
+      { text: '✅ Sí, guardar', callback_data: 'carga_confirmar' },
+      { text: '❌ No, repetir', callback_data: 'carga_repetir'   },
+    ]]
   }
 };
+
+// ── FUNCIÓN GUARDAR DIESEL ────────────────────────────────
+async function guardarDiesel(chatId, fotoFileId) {
+  const d = userState[chatId]?.datos;
+  if (!d) return;
+  userState[chatId] = { estado: null };
+
+  const fecha = new Date().toLocaleDateString('es-MX');
+  const difKM = parsearNumero(d.km_nuevo) - parsearNumero(d.km_ant);
+  const rend  = difKM > 0 ? (difKM / parsearNumero(d.litros)).toFixed(2) : '—';
+
+  try {
+    await ensureTab(SHEET_DIESEL, 'Diesel', [
+      'Fecha','Vale','Tracto','KM Nuevo','KM Anterior','KM Recorridos','Litros','Rendimiento km/lt'
+    ]);
+    await appendRow(SHEET_DIESEL, 'Diesel', [
+      fecha, d.vale, d.tracto,
+      parsearNumero(d.km_nuevo), parsearNumero(d.km_ant),
+      difKM, parsearNumero(d.litros), rend
+    ]);
+  } catch (e) {
+    console.error('❌ ERROR guardando diésel:', e.message);
+    bot.sendMessage(chatId,
+      `⚠️ Error al guardar el diésel.\n\nRevisa que el spreadsheet de diésel esté compartido con el correo de la cuenta de servicio.\n\nUsa /reset para reiniciar.`,
+      { parse_mode: 'Markdown', ...MENU_ADMIN });
+    return;
+  }
+
+  bot.sendMessage(chatId,
+    `⛽ *Diésel registrado correctamente* ✅\n\nOperador: ${d.operador}\nTracto: #${d.tracto}\nKM recorridos: ${difKM}\nRendimiento: ${rend} km/lt\nVale: #${d.vale}`,
+    { parse_mode: 'Markdown', ...MENU_ADMIN });
+
+  if (fotoFileId) {
+    ADMIN_IDS.forEach(id => {
+      bot.sendPhoto(id, fotoFileId, {
+        caption: `⛽ Vale diésel — ${d.operador} | Tracto #${d.tracto} | ${fecha}`
+      }).catch(e => console.error(`Error enviando foto diesel a admin ${id}:`, e.message));
+    });
+  }
+
+  notificarAdmins(
+    `⛽ *Diésel registrado*\nOperador: ${d.operador} | Tracto #${d.tracto}\nKM: ${difKM} | Litros: ${d.litros} | Rend: ${rend} km/lt | Vale: #${d.vale}`,
+    { parse_mode: 'Markdown' });
+}
 
 // ── COMANDO /start ────────────────────────────────────────
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
 
-  // ── CORRECCIÓN #2: Admin siempre ve menú admin, aunque esté en la hoja de operadores
   if (isAdmin(chatId)) {
     return bot.sendMessage(chatId,
       `👋 *Bienvenido Admin!*\n\n¿Qué quieres hacer?`,
@@ -306,11 +361,11 @@ bot.onText(/\/reset/, async (msg) => {
   }
 });
 
-// ── CORRECCIÓN #3: Comando /miadmin — para que el admin vea su ID en cualquier momento
+// ── COMANDO /miadmin ──────────────────────────────────────
 bot.onText(/\/miadmin/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(chatId,
-    `🔎 Tu Telegram ID es: \`${chatId}\`\n\nAdmin reconocido: *${isAdmin(chatId) ? 'SÍ ✅' : 'NO ❌'}*`,
+    `🔎 Tu Telegram ID es: \`${chatId}\`\nAdmin reconocido: *${isAdmin(chatId) ? 'SÍ ✅' : 'NO ❌'}*`,
     { parse_mode: 'Markdown' });
 });
 
@@ -318,10 +373,9 @@ bot.onText(/\/miadmin/, (msg) => {
 bot.onText(/\/registrar (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
 
-  // ── CORRECCIÓN #4: Admins no pueden registrarse como operadores accidentalmente
   if (isAdmin(chatId)) {
     return bot.sendMessage(chatId,
-      `⚠️ Eres administrador, no necesitas registrarte como operador.\n\n¿Qué necesitas?`,
+      `⚠️ Eres administrador, no necesitas registrarte.\n\n¿Qué necesitas?`,
       { parse_mode: 'Markdown', ...MENU_ADMIN });
   }
 
@@ -372,7 +426,6 @@ bot.on('callback_query', async (query) => {
   const data   = query.data;
   bot.answerCallbackQuery(query.id);
 
-  // ── CANCELAR cualquier flujo ──
   if (data === 'cancelar') {
     userState[chatId] = { estado: null };
     if (isAdmin(chatId)) {
@@ -382,30 +435,23 @@ bot.on('callback_query', async (query) => {
     }
   }
 
-  // ── CONFIRMAR GASTOS — guardar ──
   if (data === 'gastos_confirmar') {
     const st = userState[chatId];
     if (!st || st.estado !== 'gastos_revision') return;
-
     const ops      = await getOperadores();
     const operador = ops[String(chatId)];
     const d        = st.datos;
     userState[chatId] = { estado: null };
-
-    const total      = ['comida','aguas','casetas','pension','federales','otros']
-      .reduce((s, k) => s + parsearNumero(d[k]), 0);
+    const total      = ['comida','aguas','casetas','pension','federales','otros'].reduce((s, k) => s + parsearNumero(d[k]), 0);
     const anticipo   = parsearNumero(d.anticipo);
     const diferencia = anticipo - total;
-
     try {
       await ensureGastosHeader();
       await appendRow(SHEET_BOT, 'Gastos', [
         d.fecha_viaje, operador.nombre, operador.tracto, d.destino, d.dias,
-        anticipo,
-        parsearNumero(d.comida), parsearNumero(d.aguas),
+        anticipo, parsearNumero(d.comida), parsearNumero(d.aguas),
         parsearNumero(d.casetas), parsearNumero(d.pension),
-        parsearNumero(d.federales),
-        parsearNumero(d.otros),
+        parsearNumero(d.federales), parsearNumero(d.otros),
         total, diferencia
       ]);
     } catch (e) {
@@ -413,19 +459,11 @@ bot.on('callback_query', async (query) => {
       bot.sendMessage(chatId, '⚠️ Error guardando. Avisa a Fabiola.\n\nUsa /reset para reiniciar.', MENU_OPERADOR);
       return;
     }
-
     const signo = diferencia >= 0 ? '✅' : '🔴';
-    bot.sendMessage(chatId,
-      `${signo} *Gastos guardados correctamente* 👍`,
-      { parse_mode: 'Markdown', ...MENU_OPERADOR });
-
-    const alertaAdmin =
-      `💰 *Gastos de ${operador.nombre}*\n` +
-      `📅 ${d.fecha_viaje} | 📍 ${d.destino} | ${d.dias} día(s)\n` +
-      `Anticipo: $${anticipo} | Total: $${total.toFixed(2)}\n` +
-      `${diferencia >= 0 ? '✅' : '🔴'} Diferencia: $${diferencia.toFixed(2)}`;
-    notificarAdmins(alertaAdmin, { parse_mode: 'Markdown' });
-
+    bot.sendMessage(chatId, `${signo} *Gastos guardados correctamente* 👍`, { parse_mode: 'Markdown', ...MENU_OPERADOR });
+    notificarAdmins(
+      `💰 *Gastos de ${operador.nombre}*\n📅 ${d.fecha_viaje} | 📍 ${d.destino} | ${d.dias} día(s)\nAnticipo: $${anticipo} | Total: $${total.toFixed(2)}\n${diferencia >= 0 ? '✅' : '🔴'} Diferencia: $${diferencia.toFixed(2)}`,
+      { parse_mode: 'Markdown' });
     if (diferencia < 0) {
       notificarAdmins(
         `⚠️ *ALERTA — Diferencia negativa*\n${operador.nombre} gastó $${Math.abs(diferencia).toFixed(2)} más del anticipo.\n📅 ${d.fecha_viaje} | 📍 ${d.destino}`,
@@ -434,82 +472,53 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  // ── CONFIRMAR GASTOS — repetir ──
   if (data === 'gastos_repetir') {
     userState[chatId] = { estado: 'gastos', paso: 0, datos: {} };
-    bot.sendMessage(chatId,
-      `🔄 Vamos de nuevo.\n\n${PREGUNTAS_GASTOS[0].pregunta}`,
-      { parse_mode: 'Markdown', ...BTN_CANCELAR });
+    bot.sendMessage(chatId, `🔄 Vamos de nuevo.\n\n${PREGUNTAS_GASTOS[0].pregunta}`, { parse_mode: 'Markdown', ...BTN_CANCELAR });
     return;
   }
 
-  // ── CONFIRMAR CARGA — guardar ──
   if (data === 'carga_confirmar') {
     const st = userState[chatId];
     if (!st || st.estado !== 'carga_revision') return;
-
     const ops      = await getOperadores();
     const operador = ops[String(chatId)];
     const d        = st.datos;
     userState[chatId] = { estado: null };
-
     const total = parsearNumero(d.comida) + parsearNumero(d.aguas);
-
     try {
       await appendRow(SHEET_BOT, 'Cargas', [
-        d.fecha_carga,
-        operador.nombre,
-        operador.tracto,
-        d.lugar,
-        parsearNumero(d.comida),
-        parsearNumero(d.aguas),
+        d.fecha_carga, operador.nombre, operador.tracto, d.lugar,
+        parsearNumero(d.comida), parsearNumero(d.aguas),
       ]);
     } catch (e) {
       console.error('❌ ERROR guardando carga:', e.message);
       bot.sendMessage(chatId, '⚠️ Error guardando. Avisa a Fabiola.\n\nUsa /reset para reiniciar.', MENU_OPERADOR);
       return;
     }
-
-    bot.sendMessage(chatId,
-      `✅ *Carga registrada correctamente* 👍`,
-      { parse_mode: 'Markdown', ...MENU_OPERADOR });
-
+    bot.sendMessage(chatId, `✅ *Carga registrada correctamente* 👍`, { parse_mode: 'Markdown', ...MENU_OPERADOR });
     notificarAdmins(
-      `📦 *Carga de ${operador.nombre}*\n` +
-      `📅 ${d.fecha_carga} | 📍 ${d.lugar}\n` +
-      `🍽️ Comidas: $${parsearNumero(d.comida).toFixed(2)} | 💧 Aguas: $${parsearNumero(d.aguas).toFixed(2)}\n` +
-      `💰 Total: $${total.toFixed(2)}`,
+      `📦 *Carga de ${operador.nombre}*\n📅 ${d.fecha_carga} | 📍 ${d.lugar}\n🍽️ Comidas: $${parsearNumero(d.comida).toFixed(2)} | 💧 Aguas: $${parsearNumero(d.aguas).toFixed(2)}\n💰 Total: $${total.toFixed(2)}`,
       { parse_mode: 'Markdown' });
     return;
   }
 
-  // ── CONFIRMAR CARGA — repetir ──
   if (data === 'carga_repetir') {
     userState[chatId] = { estado: 'carga', paso: 0, datos: {} };
-    bot.sendMessage(chatId,
-      `🔄 Vamos de nuevo.\n\n${PREGUNTAS_CARGA[0].pregunta}`,
-      { parse_mode: 'Markdown', ...BTN_CANCELAR });
+    bot.sendMessage(chatId, `🔄 Vamos de nuevo.\n\n${PREGUNTAS_CARGA[0].pregunta}`, { parse_mode: 'Markdown', ...BTN_CANCELAR });
     return;
   }
 
-  // ── OPERADOR: Confirmar viaje ──
   if (data === 'confirmar_viaje') {
     const ops      = await getOperadores();
     const operador = ops[String(chatId)];
     if (!operador) return bot.sendMessage(chatId, '❌ No estás registrado.\nUsa /registrar NOMBRE TRACTO');
-
     const viajes  = await getViajes();
     const miViaje = viajes.find(v =>
       v.operador.toLowerCase().trim() === operador.nombre.toLowerCase().trim() &&
       v.confirmado !== 'si'
     );
-
-    if (!miViaje) {
-      return bot.sendMessage(chatId,
-        '📋 No tienes viajes pendientes por confirmar.\n\n¿Qué más necesitas?',
-        MENU_OPERADOR);
-    }
-
+    if (!miViaje) return bot.sendMessage(chatId, '📋 No tienes viajes pendientes por confirmar.\n\n¿Qué más necesitas?', MENU_OPERADOR);
     try {
       const rows   = await getRows(SHEET_BOT, 'Viajes');
       const rowIdx = rows.findIndex(r => r[0] === String(miViaje.idx));
@@ -523,55 +532,36 @@ bot.on('callback_query', async (query) => {
         });
       }
     } catch(e) { console.error('Error confirmando viaje:', e.message); }
-
-    notificarAdmins(
-      `✅ *${operador.nombre}* confirmó su viaje\n📍 ${miViaje.destino} — ${miViaje.fecha}`,
-      { parse_mode: 'Markdown' });
-
+    notificarAdmins(`✅ *${operador.nombre}* confirmó su viaje\n📍 ${miViaje.destino} — ${miViaje.fecha}`, { parse_mode: 'Markdown' });
     bot.sendMessage(chatId,
       `✅ ¡Viaje confirmado!\n\n📍 *${miViaje.destino}*\n📅 ${miViaje.fecha}\n\n📋 Ahora envíame tu remisión y caja (fotos o números).\nCuando termines escribe *listo*`,
       { parse_mode: 'Markdown' });
-
-    userState[chatId] = {
-      estado:   'esperando_remision',
-      viaje:    miViaje,
-      operador: operador,
-      archivos: []
-    };
+    userState[chatId] = { estado: 'esperando_remision', viaje: miViaje, operador: operador, archivos: [] };
     return;
   }
 
-  // ── OPERADOR: Iniciar gastos ──
   if (data === 'iniciar_gastos') {
     const ops      = await getOperadores();
     const operador = ops[String(chatId)];
     if (!operador) return bot.sendMessage(chatId, '❌ No estás registrado.\nUsa /registrar NOMBRE TRACTO');
     userState[chatId] = { estado: 'gastos', paso: 0, datos: {} };
-    bot.sendMessage(chatId,
-      `💰 *Reporte de Gastos*\n\n${PREGUNTAS_GASTOS[0].pregunta}`,
-      { parse_mode: 'Markdown', ...BTN_CANCELAR });
+    bot.sendMessage(chatId, `💰 *Reporte de Gastos*\n\n${PREGUNTAS_GASTOS[0].pregunta}`, { parse_mode: 'Markdown', ...BTN_CANCELAR });
     return;
   }
 
-  // ── OPERADOR: Iniciar carga ──
   if (data === 'iniciar_carga') {
     const ops      = await getOperadores();
     const operador = ops[String(chatId)];
     if (!operador) return bot.sendMessage(chatId, '❌ No estás registrado.\nUsa /registrar NOMBRE TRACTO');
     userState[chatId] = { estado: 'carga', paso: 0, datos: {} };
-    bot.sendMessage(chatId,
-      `📦 *Registrar Carga*\n\n${PREGUNTAS_CARGA[0].pregunta}`,
-      { parse_mode: 'Markdown', ...BTN_CANCELAR });
+    bot.sendMessage(chatId, `📦 *Registrar Carga*\n\n${PREGUNTAS_CARGA[0].pregunta}`, { parse_mode: 'Markdown', ...BTN_CANCELAR });
     return;
   }
 
-  // ── ADMIN: Ver viajes ──
   if (data === 'ver_viajes') {
     if (!isAdmin(chatId)) return;
     const viajes = await getViajes();
-    if (viajes.length === 0) {
-      return bot.sendMessage(chatId, '❌ No hay viajes registrados.', MENU_ADMIN);
-    }
+    if (viajes.length === 0) return bot.sendMessage(chatId, '❌ No hay viajes registrados.', MENU_ADMIN);
     let lista = `📋 *Viajes registrados:*\n\n`;
     viajes.forEach(v => {
       const conf = v.confirmado === 'si' ? '✅' : '⏳';
@@ -579,13 +569,11 @@ bot.on('callback_query', async (query) => {
       if (v.operador) lista += ` | ${v.operador}`;
       lista += '\n';
     });
-    lista += `\nPara asignar: /asignar NUMERO NOMBRE`;
-    lista += `\nPara borrar:  /borrar NUMERO`;
+    lista += `\nPara asignar: /asignar NUMERO NOMBRE\nPara borrar: /borrar NUMERO`;
     bot.sendMessage(chatId, lista, { parse_mode: 'Markdown', ...MENU_ADMIN });
     return;
   }
 
-  // ── ADMIN: Nuevos viajes ──
   if (data === 'nuevos_viajes') {
     if (!isAdmin(chatId)) return;
     userState[chatId] = { estado: 'esperando_viajes' };
@@ -595,32 +583,23 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  // ── ADMIN: Ver operadores ──
   if (data === 'ver_operadores') {
     if (!isAdmin(chatId)) return;
     const ops = await getOperadores();
-    if (Object.keys(ops).length === 0) {
-      return bot.sendMessage(chatId, '❌ No hay operadores registrados.', MENU_ADMIN);
-    }
+    if (Object.keys(ops).length === 0) return bot.sendMessage(chatId, '❌ No hay operadores registrados.', MENU_ADMIN);
     let lista = `👥 *Operadores registrados:*\n\n`;
-    Object.values(ops).forEach(op => {
-      lista += `🚛 *${op.nombre}* — Tracto #${op.tracto}\n`;
-    });
+    Object.values(ops).forEach(op => { lista += `🚛 *${op.nombre}* — Tracto #${op.tracto}\n`; });
     bot.sendMessage(chatId, lista, { parse_mode: 'Markdown', ...MENU_ADMIN });
     return;
   }
 
-  // ── ADMIN: Iniciar diesel ──
   if (data === 'iniciar_diesel') {
     if (!isAdmin(chatId)) return;
     userState[chatId] = { estado: 'diesel', paso: 0, datos: {} };
-    bot.sendMessage(chatId,
-      `⛽ *Registrar Diésel*\n\n${PREGUNTAS_DIESEL[0].pregunta}`,
-      { parse_mode: 'Markdown', ...BTN_CANCELAR });
+    bot.sendMessage(chatId, `⛽ *Registrar Diésel*\n\n${PREGUNTAS_DIESEL[0].pregunta}`, { parse_mode: 'Markdown', ...BTN_CANCELAR });
     return;
   }
 
-  // ── ADMIN: Ver resumen ──
   if (data === 'ver_resumen') {
     if (!isAdmin(chatId)) return;
     const ops         = await getOperadores();
@@ -644,7 +623,6 @@ bot.onText(/\/asignar (\d+) (.+)/, async (msg, match) => {
     const rows   = await getRows(SHEET_BOT, 'Viajes');
     const rowIdx = rows.findIndex(r => r[0] === idx);
     if (rowIdx < 0) return bot.sendMessage(chatId, `❌ No existe el viaje #${idx}`);
-
     const sheets = getSheetsClient();
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_BOT,
@@ -652,13 +630,10 @@ bot.onText(/\/asignar (\d+) (.+)/, async (msg, match) => {
       valueInputOption: 'USER_ENTERED',
       resource: { values: [[nombre]] },
     });
-
     const viaje = rows[rowIdx];
     const ops   = await getOperadores();
     const op    = Object.values(ops).find(o => o.nombre.toLowerCase() === nombre.toLowerCase());
-
     bot.sendMessage(chatId, `✅ Viaje #${idx} asignado a *${nombre}*`, { parse_mode: 'Markdown', ...MENU_ADMIN });
-
     if (op) {
       bot.sendMessage(op.chatId,
         `🚛 *¡Tienes un nuevo viaje!*\n\n📍 *Destino:* ${viaje[3]}\n📅 *Fecha:* ${viaje[1]}\n🕐 *Hora:* ${viaje[4] || 'Por confirmar'}\n🏭 *Cliente:* ${viaje[2]}\n\n¿Puedes confirmarlo?`,
@@ -675,10 +650,8 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const estado = userState[chatId]?.estado;
 
-  // Ignorar comandos
   if (!msg.text || msg.text.startsWith('/')) return;
 
-  // ── Admin: Agregar viajes ──
   if (estado === 'esperando_viajes') {
     if (msg.text.toLowerCase() === 'fin') {
       userState[chatId] = { estado: null };
@@ -686,12 +659,11 @@ bot.on('message', async (msg) => {
       if (viajes.length === 0) return bot.sendMessage(chatId, '❌ No hay viajes.', MENU_ADMIN);
       let lista = `✅ *Viajes registrados:*\n\n`;
       viajes.forEach(v => { lista += `${v.idx}. ${v.fecha} | ${v.cliente} | ${v.destino}\n`; });
-      lista += `\nUsa /asignar NUMERO NOMBRE`;
-      lista += `\nUsa /borrar NUMERO`;
+      lista += `\nUsa /asignar NUMERO NOMBRE\nUsa /borrar NUMERO`;
       return bot.sendMessage(chatId, lista, { parse_mode: 'Markdown', ...MENU_ADMIN });
     }
-    const lineas   = msg.text.split('\n').filter(l => l.trim());
-    let agregados  = 0;
+    const lineas  = msg.text.split('\n').filter(l => l.trim());
+    let agregados = 0;
     for (const linea of lineas) {
       const partes = linea.split('|').map(p => p.trim());
       if (partes.length >= 3) {
@@ -699,157 +671,115 @@ bot.on('message', async (msg) => {
         agregados++;
       }
     }
-    return bot.sendMessage(chatId,
-      `✅ ${agregados} viaje(s) agregado(s). Sigue agregando o escribe *fin*`,
-      { parse_mode: 'Markdown' });
+    return bot.sendMessage(chatId, `✅ ${agregados} viaje(s) agregado(s). Sigue agregando o escribe *fin*`, { parse_mode: 'Markdown' });
   }
 
-  // ── Operador: Remisión y caja ──
   if (estado === 'esperando_remision') {
     const { viaje, operador: op, archivos } = userState[chatId];
-
     if (msg.text.toLowerCase().trim() === 'listo') {
       userState[chatId] = { estado: null };
-
       if (archivos.length === 0) {
-        bot.sendMessage(chatId,
-          '⚠️ No mandaste ninguna foto o número.\nManda tu remisión y caja primero, luego escribe *listo*',
-          { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, '⚠️ No mandaste ninguna foto o número.\nManda tu remisión y caja primero, luego escribe *listo*', { parse_mode: 'Markdown' });
         userState[chatId] = { estado: 'esperando_remision', viaje, operador: op, archivos };
         return;
       }
-
       const caption = `📋 *Remisión/Caja de ${op.nombre}*\n📍 ${viaje.destino} — ${viaje.fecha}`;
       notificarAdmins(caption, { parse_mode: 'Markdown' });
-
       for (const archivo of archivos) {
         if (archivo.tipo === 'foto') {
           ADMIN_IDS.forEach(id => {
-            bot.sendPhoto(id, archivo.fileId).catch(e =>
-              console.error(`Error enviando foto a admin ${id}:`, e.message));
+            bot.sendPhoto(id, archivo.fileId).catch(e => console.error(`Error enviando foto a admin ${id}:`, e.message));
           });
         } else {
           notificarAdmins(`📝 ${archivo.texto}`, {});
         }
       }
-
-      bot.sendMessage(chatId,
-        `✅ Listo, le avisé a Fabiola 👍\n\n¡Buen viaje! 🚛`,
-        { parse_mode: 'Markdown', ...MENU_OPERADOR });
+      bot.sendMessage(chatId, `✅ Listo, le avisé a Fabiola 👍\n\n¡Buen viaje! 🚛`, { parse_mode: 'Markdown', ...MENU_OPERADOR });
       return;
     }
-
     userState[chatId].archivos.push({ tipo: 'texto', texto: msg.text });
-    bot.sendMessage(chatId,
-      `✅ Guardado. Sigue mandando o escribe *listo* cuando termines`,
-      { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `✅ Guardado. Sigue mandando o escribe *listo* cuando termines`, { parse_mode: 'Markdown' });
     return;
   }
 
-  // ── Operador: Gastos ──
   if (estado === 'gastos') {
     const paso  = userState[chatId].paso;
     const campo = PREGUNTAS_GASTOS[paso].campo;
     const texto = msg.text.trim();
-
     if (CAMPOS_NUMERICOS.includes(campo) && !esNumeroValido(texto)) {
-      bot.sendMessage(chatId,
-        `❌ Solo números.\n\n${PREGUNTAS_GASTOS[paso].pregunta}\n\nEjemplo: 250 o 0`,
-        { parse_mode: 'Markdown', ...BTN_CANCELAR });
+      bot.sendMessage(chatId, `❌ Solo números.\n\n${PREGUNTAS_GASTOS[paso].pregunta}\n\nEjemplo: 250 o 0`, { parse_mode: 'Markdown', ...BTN_CANCELAR });
       return;
     }
-
     userState[chatId].datos[campo] = texto;
     const sig = paso + 1;
-
     if (sig < PREGUNTAS_GASTOS.length) {
       userState[chatId].paso = sig;
       bot.sendMessage(chatId, PREGUNTAS_GASTOS[sig].pregunta, BTN_CANCELAR);
     } else {
       const d          = userState[chatId].datos;
-      const total      = ['comida','aguas','casetas','pension','federales','otros']
-        .reduce((s, k) => s + parsearNumero(d[k]), 0);
+      const total      = ['comida','aguas','casetas','pension','federales','otros'].reduce((s, k) => s + parsearNumero(d[k]), 0);
       const anticipo   = parsearNumero(d.anticipo);
       const diferencia = anticipo - total;
-
       userState[chatId].estado = 'gastos_revision';
-
-      bot.sendMessage(chatId,
-        generarResumenGastos(d, anticipo, total, diferencia),
-        { parse_mode: 'Markdown', ...MENU_CONFIRMAR_GASTOS });
+      bot.sendMessage(chatId, generarResumenGastos(d, anticipo, total, diferencia), { parse_mode: 'Markdown', ...MENU_CONFIRMAR_GASTOS });
     }
     return;
   }
 
-  // ── Operador: Carga ──
   if (estado === 'carga') {
     const paso  = userState[chatId].paso;
     const campo = PREGUNTAS_CARGA[paso].campo;
     const texto = msg.text.trim();
-
     if (CAMPOS_NUMERICOS.includes(campo) && !esNumeroValido(texto)) {
-      bot.sendMessage(chatId,
-        `❌ Solo números.\n\n${PREGUNTAS_CARGA[paso].pregunta}\n\nEjemplo: 150 o 0`,
-        { parse_mode: 'Markdown', ...BTN_CANCELAR });
+      bot.sendMessage(chatId, `❌ Solo números.\n\n${PREGUNTAS_CARGA[paso].pregunta}\n\nEjemplo: 150 o 0`, { parse_mode: 'Markdown', ...BTN_CANCELAR });
       return;
     }
-
     userState[chatId].datos[campo] = texto;
     const sig = paso + 1;
-
     if (sig < PREGUNTAS_CARGA.length) {
       userState[chatId].paso = sig;
       bot.sendMessage(chatId, PREGUNTAS_CARGA[sig].pregunta, BTN_CANCELAR);
     } else {
       const d     = userState[chatId].datos;
       const total = parsearNumero(d.comida) + parsearNumero(d.aguas);
-
       userState[chatId].estado = 'carga_revision';
-
       bot.sendMessage(chatId,
-        `📋 *Revisa tu carga antes de guardar:*\n\n` +
-        `📅 Fecha:     ${d.fecha_carga}\n` +
-        `📍 Lugar:     ${d.lugar}\n` +
-        `🍽️ Comidas:   $${parsearNumero(d.comida).toFixed(2)}\n` +
-        `💧 Aguas:     $${parsearNumero(d.aguas).toFixed(2)}\n\n` +
-        `💰 *Total:    $${total.toFixed(2)}*\n\n` +
-        `¿Todo correcto?`,
+        `📋 *Revisa tu carga antes de guardar:*\n\n📅 Fecha:     ${d.fecha_carga}\n📍 Lugar:     ${d.lugar}\n🍽️ Comidas:   $${parsearNumero(d.comida).toFixed(2)}\n💧 Aguas:     $${parsearNumero(d.aguas).toFixed(2)}\n\n💰 *Total:    $${total.toFixed(2)}*\n\n¿Todo correcto?`,
         { parse_mode: 'Markdown', ...MENU_CONFIRMAR_CARGA });
     }
     return;
   }
 
-  // ── Admin: Diesel ──
+  // ── DIESEL: preguntas de texto ──
   if (estado === 'diesel') {
     const paso  = userState[chatId].paso;
     const campo = PREGUNTAS_DIESEL[paso].campo;
     userState[chatId].datos[campo] = msg.text.trim();
     const sig = paso + 1;
-
     if (sig < PREGUNTAS_DIESEL.length) {
       userState[chatId].paso = sig;
       bot.sendMessage(chatId, PREGUNTAS_DIESEL[sig].pregunta, BTN_CANCELAR);
     } else {
-      const d     = userState[chatId].datos;
-      userState[chatId] = { estado: null };
-      const fecha = new Date().toLocaleDateString('es-MX');
-      const difKM = parsearNumero(d.km_nuevo) - parsearNumero(d.km_ant);
-      const rend  = difKM > 0 ? (difKM / parsearNumero(d.litros)).toFixed(2) : '—';
-
-      await appendRow(SHEET_DIESEL, 'Diesel', [
-        fecha, d.vale, d.tracto,
-        parsearNumero(d.km_nuevo), parsearNumero(d.km_ant),
-        difKM, parsearNumero(d.litros), rend
-      ]);
-
+      // Todas las preguntas respondidas — pedir foto del vale
+      userState[chatId].estado = 'diesel_foto';
       bot.sendMessage(chatId,
-        `⛽ *Diésel registrado*\n\nTracto: #${d.tracto}\nKM recorridos: ${difKM}\nRendimiento: ${rend} km/lt`,
-        { parse_mode: 'Markdown', ...MENU_ADMIN });
+        `📸 Por último, manda una *foto del vale* de diésel.\n\nSi no tienes foto escribe *sin foto*`,
+        { parse_mode: 'Markdown', ...BTN_CANCELAR });
     }
     return;
   }
 
-  // Mensaje no reconocido → mostrar menú
+  // ── DIESEL: respuesta a foto (texto "sin foto") ──
+  if (estado === 'diesel_foto') {
+    if (msg.text.toLowerCase().trim() === 'sin foto') {
+      await guardarDiesel(chatId, null);
+    } else {
+      bot.sendMessage(chatId, `📸 Manda la *foto del vale* o escribe *sin foto*`, { parse_mode: 'Markdown' });
+    }
+    return;
+  }
+
+  // Mensaje no reconocido
   if (isAdmin(chatId)) {
     bot.sendMessage(chatId, '¿Qué necesitas?', MENU_ADMIN);
   } else {
@@ -868,13 +798,18 @@ bot.on('message', async (msg) => {
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
   const estado = userState[chatId]?.estado;
+  const fileId = msg.photo[msg.photo.length - 1].file_id;
 
+  // Foto del vale de diésel
+  if (estado === 'diesel_foto') {
+    await guardarDiesel(chatId, fileId);
+    return;
+  }
+
+  // Foto de remisión/caja del operador
   if (estado === 'esperando_remision') {
-    const fileId = msg.photo[msg.photo.length - 1].file_id;
     userState[chatId].archivos.push({ tipo: 'foto', fileId });
-    bot.sendMessage(chatId,
-      `📸 Foto recibida. Sigue mandando o escribe *listo* cuando termines`,
-      { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `📸 Foto recibida. Sigue mandando o escribe *listo* cuando termines`, { parse_mode: 'Markdown' });
     return;
   }
 
