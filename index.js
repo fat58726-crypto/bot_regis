@@ -13,8 +13,12 @@ const TOKEN       = process.env.BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const PORT        = process.env.PORT || 3000;
 
-const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_TELEGRAM_ID || '')
-  .split(',').map(s => s.trim()).filter(s => s.length > 0);
+let ADMIN_IDS = new Set(
+  (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_TELEGRAM_ID || '')
+    .split(',')
+    .map(s => String(s).trim())
+    .filter(Boolean)
+);
 
 const SHEET_BOT    = '1i7uciYXLNuZ-DPxE8H0TAQyuegqVzegE751tUNhi7Qc';
 const SHEET_DIESEL = '1tEmPW1BGE7MgMXD5iOsLwq8G46GxKkT8sRuqBkdFUOk';
@@ -48,7 +52,8 @@ function getSheetsClient() {
 
 // ── HELPERS ───────────────────────────────────
 function isAdmin(chatId) {
-  const result = ADMIN_IDS.includes(String(chatId));
+  return ADMIN_IDS.has(String(chatId));
+}
   console.log(`isAdmin check — chatId: ${chatId} | ADMIN_IDS: [${ADMIN_IDS.join(',')}] | resultado: ${result}`);
   return result;
 }
