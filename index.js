@@ -96,6 +96,11 @@ function notificarAdmins(msg, opts = {}) {
   ADMIN_IDS.forEach(id => bot.sendMessage(id, msg, opts).catch(e => console.error('Admin notify error:', e.message)));
 }
 
+// ── NUEVA: enviar foto a todos los admins con caption ────
+function notificarAdminsFoto(fileId, caption) {
+  ADMIN_IDS.forEach(id => bot.sendPhoto(id, fileId, { caption }).catch(e => console.error('Error foto admin:', e.message)));
+}
+
 // ── MENÚS ─────────────────────────────────────────────────
 const MENU_OP = { reply_markup: { inline_keyboard: [
   [{ text: '✅ Confirmar mi viaje',  callback_data: 'confirmar_viaje' }],
@@ -200,6 +205,35 @@ async function borrarViaje(idx) {
   return true;
 }
 
+// ── NUEVA: GUARDAR REMISIÓN EN SHEETS ────────────────────
+async function guardarRemision(op, viaje, archivos) {
+  try {
+    const rows = await getRows(SHEET_BOT, 'Remisiones');
+    if (rows.length === 0) {
+      await appendRow(SHEET_BOT, 'Remisiones', ['Fecha','Operador','Tracto','Cliente','Destino','Fecha Viaje','Datos Remision','Tiene Fotos']);
+    }
+    const fecha = new Date().toLocaleDateString('es-MX');
+    const textosRemision = archivos
+      .filter(a => a.tipo === 'texto')
+      .map(a => a.texto)
+      .join(' | ');
+    const tieneFotos = archivos.some(a => a.tipo === 'foto') ? 'Sí' : 'No';
+    await appendRow(SHEET_BOT, 'Remisiones', [
+      fecha,
+      op.nombre,
+      op.tracto,
+      viaje.cliente || '',
+      viaje.destino || '',
+      viaje.fecha   || '',
+      textosRemision || '(solo fotos)',
+      tieneFotos
+    ]);
+    console.log(`✅ Remisión guardada en Sheets: ${op.nombre}`);
+  } catch(e) {
+    console.error('Error guardando remisión:', e.message);
+  }
+}
+
 // ── GASTOS: RESUMEN ───────────────────────────────────────
 function resumenGastos(d, anticipo, total, diferencia) {
   return `📋 *Revisa tus gastos:*\n\n` +
@@ -268,6 +302,8 @@ bot.onText(/\/asignar (\d+) (.+)/, async (msg, match) => {
     const ops   = await getOperadores();
     const op    = Object.values(ops).find(o => o.nombre.toLowerCase() === nombre.toLowerCase());
     bot.sendMessage(chatId, `✅ Viaje #${idx} asignado a *${nombre}*`, { parse_mode:'Markdown', ...MENU_ADMIN });
+    // NUEVO: notificar a todos los admins
+    notificarAdmins(`📋 Viaje #${idx} asignado a *${nombre}*\n📍 ${viaje[3]} | 📅 ${viaje[1]}`, { parse_mode:'Markdown' });
     if (op) {
       bot.sendMessage(op.chatId,
         `🚛 *¡Tienes un nuevo viaje!*\n\n📍 *Destino:* ${viaje[3]}\n📅 *Fecha:* ${viaje[1]}\n🕐 *Hora:* ${viaje[4]||'Por confirmar'}\n🏭 *Cliente:* ${viaje[2]}\n\n¿Puedes confirmarlo?`,
@@ -321,13 +357,12 @@ bot.on('callback_query', async (query) => {
       );
       if (!miViaje) return bot.sendMessage(chatId, '📋 No tienes viajes pendientes.\n\n¿Qué más necesitas?', MENU_OP);
 
-      // Marcar confirmado en Sheets
       const rowIdx = await getViajeRowIdx(miViaje.idx);
       if (rowIdx >= 0) await updateCell(SHEET_BOT, `Viajes!G${rowIdx+1}`, 'si');
 
-      notificarAdmins(`✅ *${op.nombre}* confirmó su viaje\n📍 ${miViaje.destino} — ${miViaje.fecha}`, { parse_mode:'Markdown' });
+      // MEJORADO: incluye cliente
+      notificarAdmins(`✅ *${op.nombre}* confirmó su viaje\n📍 ${miViaje.destino} — ${miViaje.fecha}\n🏭 ${miViaje.cliente}`, { parse_mode:'Markdown' });
 
-      // Guardar estado de remisión en Sheets
       await setEstado(chatId, { estado: 'esperando_remision', viaje: miViaje, operador: op, archivos: [] });
 
       bot.sendMessage(chatId,
@@ -496,7 +531,7 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, `✅ ${n} viaje(s) agregado(s). Sigue o escribe *fin*`, { parse_mode:'Markdown' });
     }
 
-    // ── Remisión y caja ──
+    // ── Remisión y caja (con guardado en Sheets) ──
     if (estado === 'esperando_remision') {
       const { viaje, operador: op, archivos } = st;
 
@@ -506,10 +541,14 @@ bot.on('message', async (msg) => {
           return;
         }
         await clearEstado(chatId);
-        notificarAdmins(`📋 *Remisión/Caja de ${op.nombre}*\n📍 ${viaje.destino} — ${viaje.fecha}`, { parse_mode:'Markdown' });
+
+        // NUEVO: guardar en Sheets
+        await guardarRemision(op, viaje, archivos);
+
+        notificarAdmins(`📋 *Remisión/Caja de ${op.nombre}*\n📍 ${viaje.destino} — ${viaje.fecha}\n🏭 ${viaje.cliente}`, { parse_mode:'Markdown' });
         for (const archivo of archivos) {
           if (archivo.tipo === 'foto') {
-            ADMIN_IDS.forEach(id => bot.sendPhoto(id, archivo.fileId).catch(e => console.error('Error foto admin:', e.message)));
+            notificarAdminsFoto(archivo.fileId, `📸 Remisión — ${op.nombre} | ${viaje.destino}`);
           } else {
             notificarAdmins(`📝 ${archivo.texto}`, {});
           }
@@ -518,7 +557,6 @@ bot.on('message', async (msg) => {
         return;
       }
 
-      // Acumular texto
       const nuevosArchivos = [...(archivos||[]), { tipo: 'texto', texto: msg.text }];
       await setEstado(chatId, { ...st, archivos: nuevosArchivos });
       bot.sendMessage(chatId, `✅ Guardado. Sigue mandando o escribe *listo*`, { parse_mode:'Markdown' });
@@ -659,7 +697,7 @@ async function guardarDiesel(chatId, fotoFileId, d) {
   }
   bot.sendMessage(chatId, `⛽ *Diésel registrado* ✅\n\nOperador: ${d.operador}\nTracto: #${d.tracto}\nKM recorridos: ${difKM}\nRendimiento: ${rend} km/lt\nVale: #${d.vale}`, { parse_mode:'Markdown', ...MENU_ADMIN });
   if (fotoFileId) {
-    ADMIN_IDS.forEach(id => bot.sendPhoto(id, fotoFileId, { caption: `⛽ Vale — ${d.operador} | Tracto #${d.tracto} | ${fecha}` }).catch(()=>{}));
+    notificarAdminsFoto(fotoFileId, `⛽ Vale — ${d.operador} | Tracto #${d.tracto} | ${fecha}`);
   }
   notificarAdmins(`⛽ *Diésel* — ${d.operador} | Tracto #${d.tracto} | KM: ${difKM} | ${rend} km/lt | Vale #${d.vale}`, { parse_mode:'Markdown' });
 }
@@ -674,8 +712,7 @@ process.on('unhandledRejection', e => console.error('unhandledRejection:', e));
 // ═══════════════════════════════════════════════════════════
 app.listen(PORT, async () => {
   console.log(`🚛 Servidor en puerto ${PORT}`);
-  console.log(`👥 Admins: ${ADMIN_IDS.length}`);
-  ADMIN_IDS.forEach(id => console.log(`   - ${id}`));
+  console.log(`👥 Admins: ${ADMIN_IDS.length} — ${ADMIN_IDS.join(', ')}`);
 
   if (!WEBHOOK_URL) {
     console.error('❌ Falta WEBHOOK_URL en variables de entorno.');
