@@ -2,9 +2,9 @@
   "name": "bot-transportes-regis",
   "version": "1.0.0",
   "description": "Bot de Telegram para Transportes Regis",
-  "main": "bot.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0",
