@@ -2,4 +2,4 @@
 cmds = ["npm install"]
 
 [start]
-cmd = "node bot.js"
+cmd = "node index.js"
