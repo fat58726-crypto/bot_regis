@@ -119,9 +119,11 @@ const MENU_CONFIRM_GASTOS  = { reply_markup: { inline_keyboard: [[{ text: '✅ G
 const MENU_CONFIRM_CARGA   = { reply_markup: { inline_keyboard: [[{ text: '✅ Guardar', callback_data: 'carga_ok'  }, { text: '🔄 Repetir', callback_data: 'carga_repetir'  }]] }};
 
 // ── PREGUNTAS ─────────────────────────────────────────────
+// MODIFICADO: se agregaron 'cliente' (paso 2) y 'desc_otros' (paso 10)
 const P_GASTOS = [
   { campo: 'fecha_viaje', pregunta: '📅 ¿Fecha del viaje?\nEjemplo: 20/Abr' },
   { campo: 'destino',     pregunta: '📍 ¿Origen y destino?\nEjemplo: Irapuato - Guadalajara' },
+  { campo: 'cliente',     pregunta: '🏭 ¿Cliente?' },                                          // NUEVO
   { campo: 'dias',        pregunta: '📅 ¿Cuántos días duró el viaje?' },
   { campo: 'anticipo',    pregunta: '💵 ¿Cuánto de anticipo te dieron?' },
   { campo: 'comida',      pregunta: '🍽️ ¿Cuánto en comidas? (0 si nada)' },
@@ -130,6 +132,7 @@ const P_GASTOS = [
   { campo: 'pension',     pregunta: '🅿️ ¿Cuánto de pensión? (0 si nada)' },
   { campo: 'federales',   pregunta: '👮 ¿Cuánto de federales? (0 si nada)' },
   { campo: 'otros',       pregunta: '📦 ¿Otro gasto? (0 si nada)' },
+  { campo: 'desc_otros',  pregunta: '📝 ¿En qué lo gastaron? (escribe "ninguno" si no aplica)' }, // NUEVO
 ];
 
 const P_CARGA = [
@@ -235,13 +238,14 @@ async function guardarRemision(op, viaje, archivos) {
 }
 
 // ── GASTOS: RESUMEN ───────────────────────────────────────
+// MODIFICADO: se agregan Cliente y Descripción otros al resumen
 function resumenGastos(d, anticipo, total, diferencia) {
   return `📋 *Revisa tus gastos:*\n\n` +
-    `📅 Fecha:      ${d.fecha_viaje}\n📍 Destino:    ${d.destino}\n📅 Días:       ${d.dias}\n\n` +
+    `📅 Fecha:      ${d.fecha_viaje}\n📍 Destino:    ${d.destino}\n🏭 Cliente:    ${d.cliente}\n📅 Días:       ${d.dias}\n\n` +
     `💵 Anticipo:   $${anticipo.toFixed(2)}\n🍽️ Comidas:    $${toNum(d.comida).toFixed(2)}\n` +
     `💧 Aguas:      $${toNum(d.aguas).toFixed(2)}\n🛣️ Casetas:    $${toNum(d.casetas).toFixed(2)}\n` +
     `🅿️ Pensión:    $${toNum(d.pension).toFixed(2)}\n👮 Federales:  $${toNum(d.federales).toFixed(2)}\n` +
-    `📦 Otros:      $${toNum(d.otros).toFixed(2)}\n\n` +
+    `📦 Otros:      $${toNum(d.otros).toFixed(2)}\n📝 Desc otros: ${d.desc_otros}\n\n` +
     `💰 *Total:     $${total.toFixed(2)}*\n${diferencia >= 0 ? '✅' : '🔴'} *Diferencia:  $${diferencia.toFixed(2)}*\n\n¿Todo correcto?`;
 }
 
@@ -302,7 +306,6 @@ bot.onText(/\/asignar (\d+) (.+)/, async (msg, match) => {
     const ops   = await getOperadores();
     const op    = Object.values(ops).find(o => o.nombre.toLowerCase() === nombre.toLowerCase());
     bot.sendMessage(chatId, `✅ Viaje #${idx} asignado a *${nombre}*`, { parse_mode:'Markdown', ...MENU_ADMIN });
-    // NUEVO: notificar a todos los admins
     notificarAdmins(`📋 Viaje #${idx} asignado a *${nombre}*\n📍 ${viaje[3]} | 📅 ${viaje[1]}`, { parse_mode:'Markdown' });
     if (op) {
       bot.sendMessage(op.chatId,
@@ -360,7 +363,6 @@ bot.on('callback_query', async (query) => {
       const rowIdx = await getViajeRowIdx(miViaje.idx);
       if (rowIdx >= 0) await updateCell(SHEET_BOT, `Viajes!G${rowIdx+1}`, 'si');
 
-      // MEJORADO: incluye cliente
       notificarAdmins(`✅ *${op.nombre}* confirmó su viaje\n📍 ${miViaje.destino} — ${miViaje.fecha}\n🏭 ${miViaje.cliente}`, { parse_mode:'Markdown' });
 
       await setEstado(chatId, { estado: 'esperando_remision', viaje: miViaje, operador: op, archivos: [] });
@@ -392,6 +394,7 @@ bot.on('callback_query', async (query) => {
     }
 
     // ── Gastos: guardar ──
+    // MODIFICADO: se agregan d.cliente y d.desc_otros al appendRow y a la notificación
     if (data === 'gastos_ok') {
       const st = await getEstado(chatId);
       if (!st || st.estado !== 'gastos_revision') return;
@@ -403,10 +406,10 @@ bot.on('callback_query', async (query) => {
       const anticipo   = toNum(d.anticipo);
       const diferencia = anticipo - total;
       const rows = await getRows(SHEET_BOT, 'Gastos');
-      if (rows.length === 0) await appendRow(SHEET_BOT, 'Gastos', ['Fecha','Operador','Tracto','Destino','Días','Anticipo','Comida','Aguas','Casetas','Pensión','Federales','Otros','Total','Diferencia']);
-      await appendRow(SHEET_BOT, 'Gastos', [d.fecha_viaje, op.nombre, op.tracto, d.destino, d.dias, anticipo, toNum(d.comida), toNum(d.aguas), toNum(d.casetas), toNum(d.pension), toNum(d.federales), toNum(d.otros), total, diferencia]);
+      if (rows.length === 0) await appendRow(SHEET_BOT, 'Gastos', ['Fecha','Operador','Tracto','Cliente','Destino','Días','Anticipo','Comida','Aguas','Casetas','Pensión','Federales','Otros','Descripción Otros','Total','Diferencia']);
+      await appendRow(SHEET_BOT, 'Gastos', [d.fecha_viaje, op.nombre, op.tracto, d.cliente, d.destino, d.dias, anticipo, toNum(d.comida), toNum(d.aguas), toNum(d.casetas), toNum(d.pension), toNum(d.federales), toNum(d.otros), d.desc_otros, total, diferencia]);
       bot.sendMessage(chatId, `${diferencia>=0?'✅':'🔴'} *Gastos guardados correctamente* 👍`, { parse_mode:'Markdown', ...MENU_OP });
-      notificarAdmins(`💰 *Gastos de ${op.nombre}*\n📅 ${d.fecha_viaje} | 📍 ${d.destino} | ${d.dias} día(s)\nAnticipo: $${anticipo} | Total: $${total.toFixed(2)}\n${diferencia>=0?'✅':'🔴'} Diferencia: $${diferencia.toFixed(2)}`, { parse_mode:'Markdown' });
+      notificarAdmins(`💰 *Gastos de ${op.nombre}*\n📅 ${d.fecha_viaje} | 📍 ${d.destino} | 🏭 ${d.cliente} | ${d.dias} día(s)\nAnticipo: $${anticipo} | Total: $${total.toFixed(2)}\n${diferencia>=0?'✅':'🔴'} Diferencia: $${diferencia.toFixed(2)}\n📝 Otros: ${d.desc_otros}`, { parse_mode:'Markdown' });
       if (diferencia < 0) notificarAdmins(`⚠️ *ALERTA* ${op.nombre} gastó $${Math.abs(diferencia).toFixed(2)} más del anticipo.`, { parse_mode:'Markdown' });
       return;
     }
@@ -542,7 +545,6 @@ bot.on('message', async (msg) => {
         }
         await clearEstado(chatId);
 
-        // NUEVO: guardar en Sheets
         await guardarRemision(op, viaje, archivos);
 
         notificarAdmins(`📋 *Remisión/Caja de ${op.nombre}*\n📍 ${viaje.destino} — ${viaje.fecha}\n🏭 ${viaje.cliente}`, { parse_mode:'Markdown' });
