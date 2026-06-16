@@ -153,6 +153,14 @@ const P_DIESEL = [
 
 const NUMERICOS = ['anticipo','comida','aguas','casetas','pension','federales','otros','dias','km_nuevo','km_ant','litros'];
 
+// ── PREGUNTAS NUEVO VIAJE (paso a paso) ──────────────────
+const P_VIAJE = [
+  { campo: 'fecha',   pregunta: '📅 ¿Fecha del viaje?\nEjemplo: 20/Abr' },
+  { campo: 'cliente', pregunta: '🏭 ¿Cliente?' },
+  { campo: 'destino', pregunta: '📍 ¿Destino?' },
+  { campo: 'hora',    pregunta: '🕐 ¿Hora de salida?\nEjemplo: 8:00am (o escribe "Sin cita")' },
+];
+
 // ── OPERADORES ────────────────────────────────────────────
 async function getOperadores() {
   const rows = await getRows(SHEET_BOT, 'Operadores');
@@ -206,6 +214,27 @@ async function borrarViaje(idx) {
     resource: { requests: [{ deleteDimension: { range: { sheetId: sheet.properties.sheetId, dimension: 'ROWS', startIndex: rowIdx, endIndex: rowIdx + 1 } } }] }
   });
   return true;
+}
+
+// ── RESET VIAJES CONFIRMADOS ──────────────────────────────
+async function resetViajesConfirmados() {
+  const sheets  = getSheets();
+  const rows    = await getRows(SHEET_BOT, 'Viajes');
+  const meta    = await sheets.spreadsheets.get({ spreadsheetId: SHEET_BOT });
+  const sheet   = meta.data.sheets.find(s => s.properties.title === 'Viajes');
+  if (!sheet) return 0;
+  const toDelete = [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i][6] && rows[i][6].toLowerCase() === 'si') toDelete.push(i);
+  }
+  if (toDelete.length === 0) return 0;
+  for (const rowIdx of toDelete) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_BOT,
+      resource: { requests: [{ deleteDimension: { range: { sheetId: sheet.properties.sheetId, dimension: 'ROWS', startIndex: rowIdx, endIndex: rowIdx + 1 } } }] }
+    });
+  }
+  return toDelete.length;
 }
 
 // ── NUEVA: GUARDAR REMISIÓN EN SHEETS ────────────────────
@@ -331,6 +360,22 @@ bot.onText(/\/borrar (\d+)/, async (msg, match) => {
   } catch(e) { bot.sendMessage(chatId, '❌ Error al borrar.'); }
 });
 
+bot.onText(/\/resetviajes/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return;
+  try {
+    const n = await resetViajesConfirmados();
+    if (n === 0) {
+      bot.sendMessage(chatId, '✅ No había viajes confirmados que limpiar.', MENU_ADMIN);
+    } else {
+      bot.sendMessage(chatId, `🗑️ *Reset completado*\n\nSe eliminaron *${n}* viaje(s) confirmado(s).\nLos viajes pendientes se conservaron.`, { parse_mode:'Markdown', ...MENU_ADMIN });
+    }
+  } catch(e) {
+    console.error('Error /resetviajes:', e.message);
+    bot.sendMessage(chatId, '❌ Error al resetear viajes.');
+  }
+});
+
 // ═══════════════════════════════════════════════════════════
 //   CALLBACKS
 // ═══════════════════════════════════════════════════════════
@@ -353,20 +398,50 @@ bot.on('callback_query', async (query) => {
       const ops = await getOperadores();
       const op  = ops[String(chatId)];
       if (!op) return bot.sendMessage(chatId, '❌ No estás registrado.\nUsa /registrar NOMBRE TRACTO');
-      const viajes  = await getViajes();
-      const miViaje = viajes.find(v =>
+      const viajes     = await getViajes();
+      const misViajes  = viajes.filter(v =>
         v.operador.toLowerCase().trim() === op.nombre.toLowerCase().trim() &&
         v.confirmado !== 'si'
       );
-      if (!miViaje) return bot.sendMessage(chatId, '📋 No tienes viajes pendientes.\n\n¿Qué más necesitas?', MENU_OP);
+      if (misViajes.length === 0) return bot.sendMessage(chatId, '📋 No tienes viajes pendientes.\n\n¿Qué más necesitas?', MENU_OP);
 
+      if (misViajes.length === 1) {
+        const miViaje = misViajes[0];
+        const rowIdx  = await getViajeRowIdx(miViaje.idx);
+        if (rowIdx >= 0) await updateCell(SHEET_BOT, `Viajes!G${rowIdx+1}`, 'si');
+        notificarAdmins(`✅ *${op.nombre}* confirmó su viaje\n📍 ${miViaje.destino} — ${miViaje.fecha}\n🏭 ${miViaje.cliente}`, { parse_mode:'Markdown' });
+        await setEstado(chatId, { estado: 'esperando_remision', viaje: miViaje, operador: op, archivos: [] });
+        bot.sendMessage(chatId,
+          `✅ ¡Viaje confirmado!\n\n📍 *${miViaje.destino}*\n📅 ${miViaje.fecha}\n\n📋 Ahora envíame tu *remisión y caja* (fotos o números).\nCuando termines escribe *listo*`,
+          { parse_mode:'Markdown' });
+        return;
+      }
+
+      // Más de uno pendiente: mostrar botones para elegir
+      const botones = misViajes.map(v => ([{
+        text: `📍 ${v.destino} — ${v.fecha} (${v.cliente})`,
+        callback_data: `elegir_viaje_${v.idx}`
+      }]));
+      botones.push([{ text: '❌ Cancelar', callback_data: 'cancelar' }]);
+      bot.sendMessage(chatId,
+        `🚛 Tienes *${misViajes.length}* viajes pendientes.\n¿Cuál quieres confirmar?`,
+        { parse_mode:'Markdown', reply_markup: { inline_keyboard: botones } });
+      return;
+    }
+
+    // ── Operador eligió un viaje específico ──
+    if (data.startsWith('elegir_viaje_')) {
+      const ops = await getOperadores();
+      const op  = ops[String(chatId)];
+      if (!op) return bot.sendMessage(chatId, '❌ No estás registrado.');
+      const idxElegido = data.replace('elegir_viaje_', '');
+      const viajes     = await getViajes();
+      const miViaje    = viajes.find(v => String(v.idx) === String(idxElegido));
+      if (!miViaje) return bot.sendMessage(chatId, '❌ No se encontró ese viaje.', MENU_OP);
       const rowIdx = await getViajeRowIdx(miViaje.idx);
       if (rowIdx >= 0) await updateCell(SHEET_BOT, `Viajes!G${rowIdx+1}`, 'si');
-
       notificarAdmins(`✅ *${op.nombre}* confirmó su viaje\n📍 ${miViaje.destino} — ${miViaje.fecha}\n🏭 ${miViaje.cliente}`, { parse_mode:'Markdown' });
-
       await setEstado(chatId, { estado: 'esperando_remision', viaje: miViaje, operador: op, archivos: [] });
-
       bot.sendMessage(chatId,
         `✅ ¡Viaje confirmado!\n\n📍 *${miViaje.destino}*\n📅 ${miViaje.fecha}\n\n📋 Ahora envíame tu *remisión y caja* (fotos o números).\nCuando termines escribe *listo*`,
         { parse_mode:'Markdown' });
@@ -460,10 +535,29 @@ bot.on('callback_query', async (query) => {
     // ── Admin: nuevos viajes ──
     if (data === 'nuevos_viajes') {
       if (!isAdmin(chatId)) return;
-      await setEstado(chatId, { estado: 'esperando_viajes' });
+      await setEstado(chatId, { estado: 'nuevo_viaje', paso: 0, datos: {} });
       bot.sendMessage(chatId,
-        `📋 *Agregar viajes*\n\nUn viaje por línea:\n\`Fecha | Cliente | Destino | Hora\`\n\nEjemplo:\n\`19/Abr | Kerry | Guadalajara | 8:00am\`\n\nEscribe *fin* cuando termines`,
+        `📋 *Agregar viaje*\n\n${P_VIAJE[0].pregunta}`,
         { parse_mode:'Markdown', ...BTN_CANCELAR });
+      return;
+    }
+
+    // ── Admin: confirmar nuevo viaje ──
+    if (data === 'viaje_guardar') {
+      const st = await getEstado(chatId);
+      if (!st || st.estado !== 'nuevo_viaje_revision') return;
+      const d = st.datos;
+      await clearEstado(chatId);
+      const idx = await saveViaje({ fecha: d.fecha, cliente: d.cliente, destino: d.destino, hora: d.hora });
+      bot.sendMessage(chatId,
+        `✅ *Viaje #${idx} guardado*\n\n📅 ${d.fecha} | 🏭 ${d.cliente}\n📍 ${d.destino} | 🕐 ${d.hora}\n\n¿Agregar otro? Usa el botón ➕ Nuevos viajes`,
+        { parse_mode:'Markdown', ...MENU_ADMIN });
+      return;
+    }
+
+    if (data === 'viaje_repetir') {
+      await setEstado(chatId, { estado: 'nuevo_viaje', paso: 0, datos: {} });
+      bot.sendMessage(chatId, `🔄 De nuevo.\n\n${P_VIAJE[0].pregunta}`, { parse_mode:'Markdown', ...BTN_CANCELAR });
       return;
     }
 
@@ -514,24 +608,25 @@ bot.on('message', async (msg) => {
     const st     = await getEstado(chatId);
     const estado = st?.estado;
 
-    // ── Admin: agregar viajes ──
-    if (estado === 'esperando_viajes') {
-      if (msg.text.toLowerCase() === 'fin') {
-        await clearEstado(chatId);
-        const viajes = await getViajes();
-        if (!viajes.length) return bot.sendMessage(chatId, '❌ No hay viajes.', MENU_ADMIN);
-        let lista = `✅ *Viajes:*\n\n`;
-        viajes.forEach(v => { lista += `${v.idx}. ${v.fecha} | ${v.cliente} | ${v.destino}\n`; });
-        lista += `\n/asignar NUMERO NOMBRE\n/borrar NUMERO`;
-        return bot.sendMessage(chatId, lista, { parse_mode:'Markdown', ...MENU_ADMIN });
+    // ── Admin: captura de viaje paso a paso ──
+    if (estado === 'nuevo_viaje') {
+      const paso        = st.paso;
+      const campo       = P_VIAJE[paso].campo;
+      const nuevosDatos = { ...st.datos, [campo]: msg.text.trim() };
+      const sig         = paso + 1;
+      if (sig < P_VIAJE.length) {
+        await setEstado(chatId, { estado: 'nuevo_viaje', paso: sig, datos: nuevosDatos });
+        bot.sendMessage(chatId, P_VIAJE[sig].pregunta, BTN_CANCELAR);
+      } else {
+        await setEstado(chatId, { estado: 'nuevo_viaje_revision', datos: nuevosDatos });
+        bot.sendMessage(chatId,
+          `📋 *Revisa el viaje:*\n\n📅 Fecha:   ${nuevosDatos.fecha}\n🏭 Cliente: ${nuevosDatos.cliente}\n📍 Destino: ${nuevosDatos.destino}\n🕐 Hora:    ${nuevosDatos.hora}\n\n¿Todo correcto?`,
+          { parse_mode:'Markdown', reply_markup: { inline_keyboard: [[
+            { text: '✅ Guardar', callback_data: 'viaje_guardar' },
+            { text: '🔄 Repetir', callback_data: 'viaje_repetir' }
+          ]] }});
       }
-      const lineas = msg.text.split('\n').filter(l => l.trim());
-      let n = 0;
-      for (const linea of lineas) {
-        const p = linea.split('|').map(x => x.trim());
-        if (p.length >= 3) { await saveViaje({ fecha: p[0], cliente: p[1], destino: p[2], hora: p[3]||'Sin cita', operador: '' }); n++; }
-      }
-      return bot.sendMessage(chatId, `✅ ${n} viaje(s) agregado(s). Sigue o escribe *fin*`, { parse_mode:'Markdown' });
+      return;
     }
 
     // ── Remisión y caja (con guardado en Sheets) ──
