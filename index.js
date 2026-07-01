@@ -806,7 +806,48 @@ process.on('unhandledRejection', e => console.error('unhandledRejection:', e));
 
 // ═══════════════════════════════════════════════════════════
 //   ARRANQUE
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════// ── DASHBOARD ADMIN ───────────────────────────────────────
+const path = require('path');
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/dashboard', (req, res) => {
+  const TOKEN_DASHBOARD = process.env.DASHBOARD_TOKEN || 'regis2024';
+  if (req.query.token !== TOKEN_DASHBOARD) return res.status(401).send('No autorizado');
+  res.sendFile(path.join(__dirname, 'public', 'vista-admin.html'));
+});
+
+app.get('/api/admin', async (req, res) => {
+  const TOKEN_DASHBOARD = process.env.DASHBOARD_TOKEN || 'regis2024';
+  if (req.query.token !== TOKEN_DASHBOARD) return res.status(401).json({ ok: false });
+  try {
+    const ops        = await getOperadores();
+    const viajes     = await getViajes();
+    const rowsGastos = await getRows(SHEET_BOT, 'Gastos');
+    const headers    = rowsGastos[0] || [];
+    const col        = (nombre) => headers.findIndex(h => h === nombre);
+    const gastos = rowsGastos.slice(1).map(r => ({
+      fecha:      r[col('Fecha')]       || '',
+      operador:   r[col('Operador')]    || '',
+      destino:    r[col('Destino')]     || '',
+      cliente:    r[col('Cliente')]     || '',
+      total:      parseFloat(r[col('Total')])      || 0,
+      diferencia: parseFloat(r[col('Diferencia')]) || 0,
+    })).reverse();
+    const marcador = Object.values(ops).map(o => ({
+      nombre: o.nombre, tracto: o.tracto, chatId: o.chatId,
+      viajes: viajes.filter(v => v.operador.toLowerCase().trim() === o.nombre.toLowerCase().trim() && v.confirmado === 'si').length
+    })).sort((a, b) => b.viajes - a.viajes);
+    res.json({ ok: true, operadores: Object.values(ops), viajes: viajes.reverse(), gastos, marcador });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/admin/viaje', async (req, res) => {
+  const TOKEN_DASHBOARD = process.env.DASHBOARD_TOKEN || 'regis2024';
+  if (req.query.token !== TOKEN_DASHBOARD) return res.status(401).json({ ok: false });
+  try {
+    const { fecha, cliente, destino, hora, operador } = req.body;
 app.listen(PORT, async () => {
   console.log(`🚛 Servidor en puerto ${PORT}`);
   console.log(`👥 Admins: ${ADMIN_IDS.length} — ${ADMIN_IDS.join(', ')}`);
