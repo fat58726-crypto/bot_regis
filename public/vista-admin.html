@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Control Ops — Admin</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  :root {
+    --bg: #0e1117; --card: #161b27; --card2: #1c2235;
+    --border: #252d42; --accent: #f5a623; --green: #27c97a;
+    --red: #ff5a5a; --blue: #4b9eff; --yellow: #f5c842;
+    --text: #e8edf5; --muted: #6b7691; --dim: #3a4260;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; min-height: 100vh; }
+
+  /* HEADER */
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 32px; height: 32px; background: var(--accent); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+  .logo-text { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; }
+  .logo-sub { font-size: 10px; color: var(--muted); letter-spacing: 0.08em; }
+  .live { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--green); }
+  .live-dot { width: 7px; height: 7px; background: var(--green); border-radius: 50%; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.8)} }
+
+  /* KPIS */
+  .kpis { display: grid; grid-template-columns: repeat(4,1fr); border-bottom: 1px solid var(--border); }
+  .kpi { padding: 14px 18px; border-right: 1px solid var(--border); }
+  .kpi:last-child { border-right: none; }
+  .kpi-lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 6px; }
+  .kpi-val { font-size: 26px; font-weight: 700; line-height: 1; margin-bottom: 3px; }
+  .kpi-sub { font-size: 11px; color: var(--muted); }
+  .kpi.o .kpi-val { color: var(--accent); }
+  .kpi.g .kpi-val { color: var(--green); }
+  .kpi.b .kpi-val { color: var(--blue); }
+  .kpi.r .kpi-val { color: var(--red); }
+
+  /* TABS */
+  .tabs { display: flex; background: var(--bg); border-bottom: 1px solid var(--border); padding: 0 20px; gap: 2px; }
+  .tab { padding: 12px 16px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; letter-spacing: 0.04em; transition: color .15s; }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab:hover:not(.active) { color: var(--text); }
+
+  /* PANEL */
+  .panel { display: none; padding: 20px; max-width: 900px; margin: 0 auto; }
+  .panel.active { display: block; }
+
+  /* FORM NUEVO VIAJE */
+  .form-card { background: var(--card); border: 1px solid rgba(245,166,35,0.35); border-radius: 10px; padding: 18px; margin-bottom: 20px; }
+  .form-title { font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 14px; display: flex; align-items: center; gap: 6px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; }
+  .form-group.full { grid-column: 1 / -1; }
+  .form-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .form-input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; color: var(--text); font-size: 13px; font-family: 'Inter', sans-serif; width: 100%; transition: border-color .15s; }
+  .form-input:focus { outline: none; border-color: var(--accent); }
+  .form-input::placeholder { color: var(--dim); }
+  select.form-input { cursor: pointer; }
+  .btn-save { background: var(--accent); color: #0e1117; font-size: 13px; font-weight: 700; padding: 10px 20px; border-radius: 6px; border: none; cursor: pointer; width: 100%; margin-top: 4px; letter-spacing: 0.04em; transition: opacity .15s; }
+  .btn-save:hover { opacity: .88; }
+  .btn-save:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* TOAST */
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--green); color: #0e1117; padding: 12px 20px; border-radius: 8px; font-size: 13px; font-weight: 600; transform: translateY(80px); opacity: 0; transition: all .3s; z-index: 999; }
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast.error { background: var(--red); color: #fff; }
+
+  /* SECTION TITLE */
+  .sec-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); margin-bottom: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .sec-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  /* VIAJE ROW */
+  .viaje-row { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 13px 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 14px; }
+  .viaje-row.sin-op { border-color: rgba(255,90,90,.35); }
+  .v-idx { font-size: 11px; color: var(--muted); font-family: monospace; min-width: 36px; }
+  .v-info { flex: 1; min-width: 0; }
+  .v-ruta { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .v-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .v-op { font-size: 11px; color: var(--blue); margin-top: 2px; }
+  .badge { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 3px 8px; border-radius: 20px; white-space: nowrap; flex-shrink: 0; }
+  .badge.conf { background: rgba(39,201,122,.15); color: var(--green); }
+  .badge.pend { background: rgba(245,166,35,.15); color: var(--accent); }
+  .badge.sinop { background: rgba(255,90,90,.15); color: var(--red); }
+
+  /* OPERADOR ROW */
+  .op-row { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; }
+  .op-av { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+  .op-inf { flex: 1; }
+  .op-nom { font-size: 14px; font-weight: 600; }
+  .op-tr { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .op-pill { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 7px; border-radius: 20px; margin-top: 4px; display: inline-block; }
+  .p1 { background: rgba(255,215,0,.15); color: #ffd700; }
+  .p2 { background: rgba(192,192,192,.15); color: #c0c0c0; }
+  .p3 { background: rgba(205,127,50,.15); color: #cd7f32; }
+  .p4 { background: rgba(107,118,145,.15); color: var(--muted); }
+  .op-stats { text-align: right; }
+  .op-big { font-size: 24px; font-weight: 700; color: var(--accent); line-height: 1; }
+  .op-u { font-size: 10px; color: var(--muted); text-transform: uppercase; }
+  .op-link { font-size: 10px; color: var(--blue); margin-top: 4px; cursor: pointer; text-decoration: underline; }
+
+  /* GASTO ROW */
+  .gasto-row { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; }
+  .gasto-row.alerta { border-color: rgba(255,90,90,.4); }
+  .g-inf { flex: 1; min-width: 0; }
+  .g-op { font-size: 13px; font-weight: 600; }
+  .g-det { font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .g-num { text-align: right; }
+  .g-total { font-size: 15px; font-weight: 700; }
+  .g-total.ok { color: var(--green); }
+  .g-total.over { color: var(--red); }
+  .g-dif { font-size: 10px; margin-top: 2px; }
+  .g-dif.ok { color: var(--green); }
+  .g-dif.over { color: var(--red); }
+  .alert-tag { font-size: 9px; background: rgba(255,90,90,.15); color: var(--red); padding: 3px 7px; border-radius: 10px; font-weight: 700; flex-shrink: 0; }
+
+  /* LOADING / ERROR */
+  .loading { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; gap: 14px; color: var(--muted); }
+  .spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
+
+  @media (max-width: 600px) {
+    .kpis { grid-template-columns: repeat(2,1fr); }
+    .kpi { border-right: none; border-bottom: 1px solid var(--border); }
+    .form-grid { grid-template-columns: 1fr; }
+    .panel { padding: 14px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">🚛</div>
+    <div>
+      <div class="logo-text">CONTROL OPS</div>
+      <div class="logo-sub">Administrador</div>
+    </div>
+  </div>
+  <div class="live"><div class="live-dot"></div><span id="fechaHoy">—</span></div>
+</header>
+
+<!-- KPIS -->
+<div class="kpis" id="kpis">
+  <div class="kpi o"><div class="kpi-lbl">Viajes</div><div class="kpi-val" id="k-viajes">—</div><div class="kpi-sub" id="k-viajes-sub">Cargando...</div></div>
+  <div class="kpi g"><div class="kpi-lbl">Operadores</div><div class="kpi-val" id="k-ops">—</div><div class="kpi-sub" id="k-ops-sub">—</div></div>
+  <div class="kpi b"><div class="kpi-lbl">Gasto total</div><div class="kpi-val" id="k-gasto">—</div><div class="kpi-sub">Todos los reportes</div></div>
+  <div class="kpi r"><div class="kpi-lbl">Alertas</div><div class="kpi-val" id="k-alertas">—</div><div class="kpi-sub" id="k-alertas-sub">—</div></div>
+</div>
+
+<!-- TABS -->
+<div class="tabs">
+  <div class="tab active" onclick="showTab('viajes',this)">📋 Viajes</div>
+  <div class="tab" onclick="showTab('operadores',this)">👥 Operadores</div>
+  <div class="tab" onclick="showTab('gastos',this)">💰 Gastos</div>
+</div>
+
+<!-- PANEL VIAJES -->
+<div class="panel active" id="panel-viajes">
+  <div class="form-card">
+    <div class="form-title">➕ Nuevo viaje</div>
+    <div class="form-grid">
+      <div class="form-group">
+        <div class="form-lbl">Fecha</div>
+        <input class="form-input" id="f-fecha" placeholder="18/Jun" />
+      </div>
+      <div class="form-group">
+        <div class="form-lbl">Cliente</div>
+        <input class="form-input" id="f-cliente" placeholder="FEMSA" />
+      </div>
+      <div class="form-group">
+        <div class="form-lbl">Destino</div>
+        <input class="form-input" id="f-destino" placeholder="Guadalajara" />
+      </div>
+      <div class="form-group">
+        <div class="form-lbl">Hora salida</div>
+        <input class="form-input" id="f-hora" placeholder="8:00am o Sin cita" />
+      </div>
+      <div class="form-group full">
+        <div class="form-lbl">Operador (opcional)</div>
+        <select class="form-input" id="f-operador">
+          <option value="">— Sin asignar —</option>
+        </select>
+      </div>
+    </div>
+    <button class="btn-save" id="btn-guardar" onclick="guardarViaje()">Guardar y notificar operador</button>
+  </div>
+
+  <div class="sec-title">Todos los viajes</div>
+  <div id="lista-viajes"><div class="loading"><div class="spinner"></div><span>Cargando viajes...</span></div></div>
+</div>
+
+<!-- PANEL OPERADORES -->
+<div class="panel" id="panel-operadores">
+  <div class="sec-title">Marcador del equipo</div>
+  <div id="lista-ops"><div class="loading"><div class="spinner"></div></div></div>
+</div>
+
+<!-- PANEL GASTOS -->
+<div class="panel" id="panel-gastos">
+  <div class="sec-title">Todos los reportes de gastos</div>
+  <div id="lista-gastos"><div class="loading"><div class="spinner"></div></div></div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+let operadoresData = [];
+
+function showTab(id, el) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('panel-' + id).classList.add('active');
+  el.classList.add('active');
+}
+
+function toast(msg, error = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (error ? ' error' : '');
+  setTimeout(() => t.className = 'toast', 3000);
+}
+
+function setFecha() {
+  document.getElementById('fechaHoy').textContent = new Date().toLocaleDateString('es-MX', {
+    weekday: 'long', day: 'numeric', month: 'long'
+  }).toUpperCase();
+}
+
+async function cargarDatos() {
+  try {
+    const res  = await fetch(`/api/admin?token=${TOKEN}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Sin acceso');
+
+    const { operadores, viajes, gastos, marcador } = data;
+    operadoresData = operadores;
+
+    // KPIs
+    const conf    = viajes.filter(v => v.confirmado === 'si').length;
+    const sinOp   = viajes.filter(v => !v.operador).length;
+    const total   = gastos.reduce((s, g) => s + g.total, 0);
+    const alertas = gastos.filter(g => g.diferencia < 0);
+
+    document.getElementById('k-viajes').textContent = viajes.length;
+    document.getElementById('k-viajes-sub').textContent = `${conf} conf · ${viajes.length - conf} pend`;
+    document.getElementById('k-ops').textContent = operadores.length;
+    document.getElementById('k-ops-sub').textContent = operadores.map(o => o.nombre).join(' · ');
+    document.getElementById('k-gasto').textContent = '$' + (total / 1000).toFixed(1) + 'k';
+    document.getElementById('k-alertas').textContent = alertas.length;
+    document.getElementById('k-alertas-sub').textContent = alertas.length
+      ? alertas.map(g => `${g.operador} -$${Math.abs(g.diferencia).toLocaleString()}`).join(', ')
+      : 'Sin alertas';
+
+    // Select operadores
+    const sel = document.getElementById('f-operador');
+    sel.innerHTML = '<option value="">— Sin asignar —</option>';
+    operadores.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o.nombre;
+      opt.textContent = `${o.nombre} — Tracto #${o.tracto}`;
+      sel.appendChild(opt);
+    });
+
+    // Viajes
+    const posEmoji = ['🥇','🥈','🥉','4️⃣'];
+    const posClass = ['p1','p2','p3','p4'];
+
+    document.getElementById('lista-viajes').innerHTML = viajes.length === 0
+      ? `<div class="empty">No hay viajes registrados.</div>`
+      : viajes.map(v => `
+        <div class="viaje-row ${!v.operador ? 'sin-op' : ''}">
+          <div class="v-idx">#${v.idx}</div>
+          <div class="v-info">
+            <div class="v-ruta">${v.destino}</div>
+            <div class="v-meta">📅 ${v.fecha} · 🏭 ${v.cliente}${v.hora ? ' · 🕐 ' + v.hora : ''}</div>
+            <div class="v-op">${v.operador ? '🚛 ' + v.operador : '⚠️ Sin operador'}</div>
+          </div>
+          <div class="badge ${v.confirmado === 'si' ? 'conf' : (!v.operador ? 'sinop' : 'pend')}">
+            ${v.confirmado === 'si' ? '✅ Confirmado' : (!v.operador ? '❌ Sin operador' : '⏳ Pendiente')}
+          </div>
+        </div>
+      `).join('');
+
+    // Operadores
+    document.getElementById('lista-ops').innerHTML = marcador.map((m, i) => `
+      <div class="op-row">
+        <div class="op-av" style="background:${['rgba(255,215,0,.15)','rgba(192,192,192,.15)','rgba(205,127,50,.15)','rgba(107,118,145,.15)'][i]};color:${['#ffd700','#c0c0c0','#cd7f32','#6b7691'][i]}">
+          ${m.nombre.slice(0,2).toUpperCase()}
+        </div>
+        <div class="op-inf">
+          <div class="op-nom">${m.nombre}</div>
+          <div class="op-tr">Tracto #${m.tracto}</div>
+          <div class="op-pill ${posClass[i] || 'p4'}">${posEmoji[i] || '—'} ${['Líder','2do lugar','3er lugar','4to lugar'][i] || (i+1)+'to lugar'}</div>
+        </div>
+        <div class="op-stats">
+          <div class="op-big">${m.viajes}</div>
+          <div class="op-u">viajes</div>
+          <div class="op-link" onclick="copiarLink('${m.chatId}')">📋 Copiar link</div>
+        </div>
+      </div>
+    `).join('');
+
+    // Gastos
+    document.getElementById('lista-gastos').innerHTML = gastos.length === 0
+      ? `<div class="empty">No hay gastos registrados.</div>`
+      : gastos.map(g => {
+          const ok = g.diferencia >= 0;
+          return `
+          <div class="gasto-row ${!ok ? 'alerta' : ''}">
+            <div class="g-inf">
+              <div class="g-op">🚛 ${g.operador}</div>
+              <div class="g-det">📅 ${g.fecha} · 📍 ${g.destino} · 🏭 ${g.cliente}</div>
+            </div>
+            <div class="g-num">
+              <div class="g-total ${ok ? 'ok' : 'over'}">$${g.total.toLocaleString()}</div>
+              <div class="g-dif ${ok ? 'ok' : 'over'}">${ok ? '+' : ''}$${g.diferencia.toLocaleString()}</div>
+            </div>
+            ${!ok ? '<div class="alert-tag">⚠️ Alerta</div>' : ''}
+          </div>`;
+        }).join('');
+
+  } catch(e) {
+    console.error(e);
+    toast('Error cargando datos: ' + e.message, true);
+  }
+}
+
+async function guardarViaje() {
+  const fecha    = document.getElementById('f-fecha').value.trim();
+  const cliente  = document.getElementById('f-cliente').value.trim();
+  const destino  = document.getElementById('f-destino').value.trim();
+  const hora     = document.getElementById('f-hora').value.trim() || 'Sin cita';
+  const operador = document.getElementById('f-operador').value;
+
+  if (!fecha || !cliente || !destino) {
+    toast('Completa fecha, cliente y destino', true);
+    return;
+  }
+
+  const btn = document.getElementById('btn-guardar');
+  btn.disabled = true;
+  btn.textContent = 'Guardando...';
+
+  try {
+    const res  = await fetch(`/api/admin/viaje?token=${TOKEN}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fecha, cliente, destino, hora, operador })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+
+    toast(`✅ Viaje #${data.idx} guardado${operador ? ' · Notificando a ' + operador : ''}`);
+    document.getElementById('f-fecha').value    = '';
+    document.getElementById('f-cliente').value  = '';
+    document.getElementById('f-destino').value  = '';
+    document.getElementById('f-hora').value     = '';
+    document.getElementById('f-operador').value = '';
+
+    setTimeout(cargarDatos, 1000);
+  } catch(e) {
+    toast('Error: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Guardar y notificar operador';
+  }
+}
+
+function copiarLink(chatId) {
+  const link = `${location.origin}/operador/${chatId}`;
+  navigator.clipboard.writeText(link).then(() => toast('Link copiado: ' + link));
+}
+
+setFecha();
+cargarDatos();
+setInterval(cargarDatos, 60000); // refresca cada minuto
+</script>
+</body>
+</html>
