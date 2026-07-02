@@ -806,6 +806,107 @@ app.post('/api/admin/viaje', async (req, res) => {
     res.json({ ok: false, error: e.message });
   }
 });
+
+// ── NUEVOS ENDPOINTS: CAJA / REMISIONES / DIÉSEL / CARGAS ──
+app.get('/api/admin/remisiones', async (req, res) => {
+  const TOKEN_DASHBOARD = process.env.DASHBOARD_TOKEN || 'regis2024';
+  if (req.query.token !== TOKEN_DASHBOARD) return res.status(401).json({ ok: false });
+  try {
+    const rows    = await getRows(SHEET_BOT, 'Remisiones');
+    const headers = rows[0] || [];
+    const col     = (nombre) => headers.findIndex(h => h === nombre);
+    const remisiones = rows.slice(1).map(r => ({
+      fecha:      r[col('Fecha')]          || '',
+      operador:   r[col('Operador')]       || '',
+      tracto:     r[col('Tracto')]         || '',
+      cliente:    r[col('Cliente')]        || '',
+      destino:    r[col('Destino')]        || '',
+      fechaViaje: r[col('Fecha Viaje')]    || '',
+      datos:      r[col('Datos Remision')] || '',
+      tieneFotos: r[col('Tiene Fotos')]    || 'No',
+    })).reverse();
+    res.json({ ok: true, remisiones });
+  } catch (e) {
+    console.error('Error API remisiones:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/admin/caja', async (req, res) => {
+  const TOKEN_DASHBOARD = process.env.DASHBOARD_TOKEN || 'regis2024';
+  if (req.query.token !== TOKEN_DASHBOARD) return res.status(401).json({ ok: false });
+  try {
+    const rows    = await getRows(SHEET_BOT, 'Remisiones');
+    const headers = rows[0] || [];
+    const col     = (nombre) => headers.findIndex(h => h === nombre);
+    const caja = rows.slice(1).map((r, i) => {
+      const tieneDatos = (r[col('Datos Remision')] || '').trim().length > 0;
+      const tieneFotos = r[col('Tiene Fotos')] === 'Sí';
+      return {
+        numero:        i + 1,
+        fecha:         r[col('Fecha')]          || '',
+        operador:      r[col('Operador')]       || '',
+        cliente:       r[col('Cliente')]        || '',
+        destino:       r[col('Destino')]        || '',
+        estado:        (tieneDatos || tieneFotos) ? 'Recibida' : 'Pendiente',
+        observaciones: r[col('Datos Remision')] || '',
+      };
+    }).reverse();
+    const recibidas  = caja.filter(c => c.estado === 'Recibida').length;
+    const pendientes = caja.length - recibidas;
+    res.json({ ok: true, caja, recibidas, pendientes });
+  } catch (e) {
+    console.error('Error API caja:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/admin/diesel', async (req, res) => {
+  const TOKEN_DASHBOARD = process.env.DASHBOARD_TOKEN || 'regis2024';
+  if (req.query.token !== TOKEN_DASHBOARD) return res.status(401).json({ ok: false });
+  try {
+    const rows    = await getRows(SHEET_DIESEL, 'Diesel');
+    const headers = rows[0] || [];
+    const col     = (nombre) => headers.findIndex(h => h === nombre);
+    const diesel = rows.slice(1).map(r => ({
+      fecha:        r[col('Fecha')]                 || '',
+      vale:         r[col('Vale')]                  || '',
+      operador:     r[col('Operador')]              || '',
+      tracto:       r[col('Tracto')]                || '',
+      kmNuevo:      parseFloat(r[col('KM Nuevo')])      || 0,
+      kmAnterior:   parseFloat(r[col('KM Anterior')])   || 0,
+      kmRecorridos: parseFloat(r[col('KM Recorridos')]) || 0,
+      litros:       parseFloat(r[col('Litros')])        || 0,
+      rendimiento:  r[col('Rendimiento km/lt')]     || '—',
+    })).reverse();
+    res.json({ ok: true, diesel });
+  } catch (e) {
+    console.error('Error API diesel:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/admin/cargas', async (req, res) => {
+  const TOKEN_DASHBOARD = process.env.DASHBOARD_TOKEN || 'regis2024';
+  if (req.query.token !== TOKEN_DASHBOARD) return res.status(401).json({ ok: false });
+  try {
+    const rows    = await getRows(SHEET_BOT, 'Cargas');
+    const headers = rows[0] || [];
+    const col     = (nombre) => headers.findIndex(h => h === nombre);
+    const cargas = rows.slice(1).map(r => ({
+      fecha:    r[col('Fecha')]    || '',
+      operador: r[col('Operador')] || '',
+      tracto:   r[col('Tracto')]   || '',
+      lugar:    r[col('Lugar')]    || '',
+      comida:   parseFloat(r[col('Comida')]) || 0,
+      aguas:    parseFloat(r[col('Aguas')])  || 0,
+    })).reverse();
+    res.json({ ok: true, cargas });
+  } catch (e) {
+    console.error('Error API cargas:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
  
 // ═══════════════════════════════════════════════════════════
 //   ARRANQUE
