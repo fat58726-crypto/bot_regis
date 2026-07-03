@@ -188,6 +188,14 @@
   .empty-state p{ font-size:15px; max-width:440px; margin:0 auto; line-height:1.5; }
   .empty-state .tag{ display:inline-block; margin-top:16px; font-size:12.5px; background:var(--orange-soft); color:var(--orange); padding:5px 12px; border-radius:100px; font-weight:700; }
 
+  /* REMISION CARDS */
+  .rem-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+  .rem-card{ background:#fff; border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:18px; }
+  .rem-card .rem-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:10px; }
+  .rem-card .rem-op{ font-weight:700; font-size:15.5px; }
+  .rem-card .rem-meta{ font-size:13px; color:var(--text-muted); margin-top:2px; line-height:1.5; }
+  .rem-card .rem-datos{ font-size:14px; color:var(--text); background:var(--bg-soft); border-radius:10px; padding:10px 12px; margin-top:10px; white-space:pre-wrap; word-break:break-word; }
+
   /* TOAST */
   .toast{ position:fixed; bottom:26px; right:26px; background:var(--text); color:#fff; padding:14px 20px; border-radius:12px; font-size:15px; font-weight:600; transform:translateY(90px); opacity:0; transition:all .3s; z-index:999; box-shadow:var(--shadow-md); }
   .toast.show{ transform:translateY(0); opacity:1; }
@@ -202,6 +210,7 @@
     .kpi-grid{ grid-template-columns:repeat(2,1fr); }
     .chart-grid, .chart-grid.thirds{ grid-template-columns:1fr; }
     .op-grid{ grid-template-columns:1fr; }
+    .rem-grid{ grid-template-columns:1fr 1fr; }
     .summary-strip{ grid-template-columns:repeat(2,1fr); }
   }
   @media (max-width:820px){
@@ -215,6 +224,7 @@
   @media (max-width:520px){
     .kpi-grid{ grid-template-columns:1fr 1fr; }
     .summary-strip{ grid-template-columns:1fr 1fr; }
+    .rem-grid{ grid-template-columns:1fr; }
     .content{ padding:18px 14px 40px; }
     .topbar{ padding:12px 14px; }
     .topbar-search{ display:none; }
@@ -417,47 +427,99 @@
         </div>
       </section>
 
-      <!-- ===== CAJA (pendiente de backend) ===== -->
+      <!-- ===== CAJA ===== -->
       <section class="tab-panel" id="tab-caja">
-        <div class="panel-head"><div><h2>Caja</h2><div class="desc">Remisiones recibidas por número de caja</div></div></div>
-        <div class="empty-state">
-          <div class="ic">📦</div>
-          <h3>Este módulo aún no tiene datos conectados</h3>
-          <p>El bot guarda las remisiones en la hoja "Remisiones", pero el servidor todavía no expone un endpoint como <code>/api/admin/caja</code> para leerlas aquí. Puedo agregarlo al <code>index.js</code> cuando quieras.</p>
-          <span class="tag">Requiere backend</span>
+        <div class="panel-head">
+          <div><h2>Caja</h2><div class="desc">Remisiones recibidas por número de caja</div></div>
+        </div>
+
+        <div class="summary-strip">
+          <div class="summary-item"><div class="lbl">Total registros</div><div class="val blue" id="cajaTotal">—</div></div>
+          <div class="summary-item"><div class="lbl">Recibidas</div><div class="val green" id="cajaRecibidas">—</div></div>
+          <div class="summary-item"><div class="lbl">Pendientes</div><div class="val red" id="cajaPendientes">—</div></div>
+        </div>
+
+        <div class="filter-bar">
+          <select id="filtroCajaOperador"><option value="">Todos los operadores</option></select>
+          <select id="filtroCajaEstado">
+            <option value="">Todos los estados</option>
+            <option value="Recibida">Recibida</option>
+            <option value="Pendiente">Pendiente</option>
+          </select>
+          <span class="count" id="countCaja"></span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Fecha</th><th>Operador</th><th>Cliente</th><th>Destino</th><th>Observaciones</th><th>Estado</th></tr></thead>
+            <tbody id="lista-caja"></tbody>
+          </table>
+          <div class="pagination" id="pagCaja"></div>
         </div>
       </section>
 
-      <!-- ===== REMISIONES (pendiente de backend) ===== -->
+      <!-- ===== REMISIONES ===== -->
       <section class="tab-panel" id="tab-remisiones">
-        <div class="panel-head"><div><h2>Remisiones</h2><div class="desc">Fotos y datos enviados por los operadores</div></div></div>
-        <div class="empty-state">
-          <div class="ic">🧾</div>
-          <h3>Este módulo aún no tiene datos conectados</h3>
-          <p>Igual que Caja, se necesita un endpoint que lea la hoja "Remisiones" (fecha, operador, cliente, destino, fotos, estado) para mostrarla aquí con miniaturas.</p>
-          <span class="tag">Requiere backend</span>
+        <div class="panel-head">
+          <div><h2>Remisiones</h2><div class="desc">Fotos y datos enviados por los operadores</div></div>
         </div>
+
+        <div class="filter-bar">
+          <select id="filtroRemOperador"><option value="">Todos los operadores</option></select>
+          <select id="filtroRemFotos">
+            <option value="">Con o sin fotos</option>
+            <option value="Sí">Con fotos</option>
+            <option value="No">Sin fotos</option>
+          </select>
+          <span class="count" id="countRem"></span>
+        </div>
+
+        <div class="rem-grid" id="lista-remisiones"></div>
+        <div class="pagination" id="pagRem" style="background:#fff; border:1px solid var(--border); border-radius:var(--radius); margin-top:12px;"></div>
       </section>
 
-      <!-- ===== DIÉSEL (pendiente de backend) ===== -->
+      <!-- ===== DIÉSEL ===== -->
       <section class="tab-panel" id="tab-diesel">
         <div class="panel-head"><div><h2>Diésel</h2><div class="desc">Kilómetros, litros y rendimiento</div></div></div>
-        <div class="empty-state">
-          <div class="ic">⛽</div>
-          <h3>Este módulo aún no tiene datos conectados</h3>
-          <p>Los registros de diésel se guardan en un spreadsheet aparte (SHEET_DIESEL). Falta un endpoint que los exponga a este panel para mostrar tabla y gráfica de rendimiento.</p>
-          <span class="tag">Requiere backend</span>
+
+        <div class="summary-strip">
+          <div class="summary-item"><div class="lbl">Registros</div><div class="val blue" id="dieselTotal">—</div></div>
+          <div class="summary-item"><div class="lbl">Litros totales</div><div class="val" id="dieselLitros">—</div></div>
+          <div class="summary-item"><div class="lbl">KM recorridos</div><div class="val" id="dieselKm">—</div></div>
+          <div class="summary-item"><div class="lbl">Rendimiento promedio</div><div class="val green" id="dieselRend">—</div></div>
+        </div>
+
+        <div class="card chart-box"><h3>Rendimiento por operador (km/lt)</h3><canvas id="chartDiesel" style="max-height:260px"></canvas></div>
+
+        <div class="filter-bar">
+          <select id="filtroDieselOperador"><option value="">Todos los operadores</option></select>
+          <span class="count" id="countDiesel"></span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th>Vale</th><th>Operador</th><th>Tracto</th><th>KM anterior</th><th>KM nuevo</th><th>KM recorridos</th><th>Litros</th><th>Rendimiento</th></tr></thead>
+            <tbody id="lista-diesel"></tbody>
+          </table>
+          <div class="pagination" id="pagDiesel"></div>
         </div>
       </section>
 
-      <!-- ===== CARGAS (pendiente de backend) ===== -->
+      <!-- ===== CARGAS ===== -->
       <section class="tab-panel" id="tab-cargas">
         <div class="panel-head"><div><h2>Cargas</h2><div class="desc">Registros de carga por operador</div></div></div>
-        <div class="empty-state">
-          <div class="ic">🏗️</div>
-          <h3>Este módulo aún no tiene datos conectados</h3>
-          <p>El bot guarda las cargas en la hoja "Cargas", pero falta exponerlas por API para verlas en este panel.</p>
-          <span class="tag">Requiere backend</span>
+
+        <div class="filter-bar">
+          <select id="filtroCargaOperador"><option value="">Todos los operadores</option></select>
+          <span class="count" id="countCargas"></span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th>Operador</th><th>Tracto</th><th>Lugar</th><th>Comida</th><th>Aguas</th><th>Total</th></tr></thead>
+            <tbody id="lista-cargas"></tbody>
+          </table>
+          <div class="pagination" id="pagCargas"></div>
         </div>
       </section>
 
@@ -491,10 +553,6 @@
             Los datos se refrescan automáticamente cada 60 segundos.
           </p>
         </div>
-        <div class="card">
-          <h3>Módulos pendientes</h3>
-          <p style="color:var(--text-muted); line-height:1.6">Caja, Remisiones, Diésel y Cargas están listos en el diseño pero necesitan que se agreguen sus endpoints en <code>index.js</code> (similar a <code>/api/admin</code>) para mostrar información real.</p>
-        </div>
       </section>
 
     </div>
@@ -505,10 +563,11 @@
 
 <script>
 const TOKEN = new URLSearchParams(location.search).get('token') || '';
-let DATA = { operadores: [], viajes: [], gastos: [], marcador: [] };
+let DATA = { operadores: [], viajes: [], gastos: [], marcador: [], caja: [], remisiones: [], diesel: [], cargas: [] };
 let charts = {};
-let pageViajes = 1, pageGastos = 1;
+let pageViajes = 1, pageGastos = 1, pageCaja = 1, pageRem = 1, pageDiesel = 1, pageCargas = 1;
 const PAGE_SIZE = 8;
+const REM_PAGE_SIZE = 9;
 const MESES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 
 /* ---------- NAV ---------- */
@@ -570,16 +629,40 @@ function makeChart(id, type, labels, data, colors, opts={}){
   });
 }
 const PALETTE = ['#2563eb','#16a34a','#ea580c','#7c3aed','#dc2626','#0891b2','#ca8a04','#db2777'];
+function fillSelect(id, values, placeholder){
+  const el = document.getElementById(id);
+  if (!el) return;
+  const current = el.value;
+  el.innerHTML = `<option value="">${placeholder}</option>` + [...new Set(values.filter(Boolean))].map(v=>`<option>${esc(v)}</option>`).join('');
+  if ([...el.options].some(o=>o.value===current)) el.value = current;
+}
 
 /* ---------- CARGA DE DATOS ---------- */
+async function fetchJSON(url){
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'Error al cargar ' + url);
+  return data;
+}
+
 async function cargarDatos(){
   const btn = document.getElementById('btnRefresh');
   btn.classList.add('spinning');
   try{
-    const res = await fetch(`/api/admin?token=${TOKEN}`);
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'Sin acceso. Revisa el token en la URL.');
-    DATA = { operadores: data.operadores||[], viajes: data.viajes||[], gastos: data.gastos||[], marcador: data.marcador||[] };
+    const [admin, caja, remisiones, diesel, cargas] = await Promise.all([
+      fetchJSON(`/api/admin?token=${TOKEN}`),
+      fetchJSON(`/api/admin/caja?token=${TOKEN}`).catch(()=>({caja:[],recibidas:0,pendientes:0})),
+      fetchJSON(`/api/admin/remisiones?token=${TOKEN}`).catch(()=>({remisiones:[]})),
+      fetchJSON(`/api/admin/diesel?token=${TOKEN}`).catch(()=>({diesel:[]})),
+      fetchJSON(`/api/admin/cargas?token=${TOKEN}`).catch(()=>({cargas:[]})),
+    ]);
+    DATA = {
+      operadores: admin.operadores||[], viajes: admin.viajes||[], gastos: admin.gastos||[], marcador: admin.marcador||[],
+      caja: caja.caja||[], caja_recibidas: caja.recibidas||0, caja_pendientes: caja.pendientes||0,
+      remisiones: remisiones.remisiones||[],
+      diesel: diesel.diesel||[],
+      cargas: cargas.cargas||[]
+    };
     document.getElementById('globalLoading').style.display = 'none';
     document.getElementById('tokenShown').textContent = TOKEN || '(vacío)';
     renderDashboard();
@@ -587,6 +670,10 @@ async function cargarDatos(){
     renderOperadores();
     renderGastos();
     renderReportes();
+    renderCaja();
+    renderRemisiones();
+    renderDiesel();
+    renderCargas();
     poblarSelects();
   }catch(e){
     document.getElementById('globalLoading').innerHTML =
@@ -607,14 +694,14 @@ function poblarSelects(){
   const fvOp = document.getElementById('filtroViajeOperador');
   fvOp.innerHTML = '<option value="">Todos los operadores</option>' + DATA.operadores.map(o=>`<option>${esc(o.nombre)}</option>`).join('');
 
-  const fgOp = document.getElementById('filtroGastoOperador');
-  fgOp.innerHTML = '<option value="">Todos los operadores</option>' + [...new Set(DATA.gastos.map(g=>g.operador))].map(n=>`<option>${esc(n)}</option>`).join('');
+  fillSelect('filtroGastoOperador', DATA.gastos.map(g=>g.operador), 'Todos los operadores');
+  fillSelect('filtroGastoCliente', DATA.gastos.map(g=>g.cliente), 'Todos los clientes');
+  fillSelect('filtroGastoDestino', DATA.gastos.map(g=>g.destino), 'Todos los destinos');
 
-  const fgCl = document.getElementById('filtroGastoCliente');
-  fgCl.innerHTML = '<option value="">Todos los clientes</option>' + [...new Set(DATA.gastos.map(g=>g.cliente))].map(n=>`<option>${esc(n)}</option>`).join('');
-
-  const fgDe = document.getElementById('filtroGastoDestino');
-  fgDe.innerHTML = '<option value="">Todos los destinos</option>' + [...new Set(DATA.gastos.map(g=>g.destino))].map(n=>`<option>${esc(n)}</option>`).join('');
+  fillSelect('filtroCajaOperador', DATA.caja.map(c=>c.operador), 'Todos los operadores');
+  fillSelect('filtroRemOperador', DATA.remisiones.map(r=>r.operador), 'Todos los operadores');
+  fillSelect('filtroDieselOperador', DATA.diesel.map(d=>d.operador), 'Todos los operadores');
+  fillSelect('filtroCargaOperador', DATA.cargas.map(c=>c.operador), 'Todos los operadores');
 }
 
 /* ---------- DASHBOARD ---------- */
@@ -633,8 +720,8 @@ function renderDashboard(){
     { icon:'👷', color:'purple', val: ops.length, lbl:'Operadores activos', sub: ops.map(o=>o.nombre).join(' · ') || '—' },
     { icon:'💰', color:'blue', val: money(gastosHoy), lbl:'Gastos del día', sub:'Reportes de hoy' },
     { icon:'💵', color:'green', val: money(totalGastado), lbl:'Gastos totales', sub:`${g.length} reportes` },
-    { icon:'📦', color:'orange', val: '—', lbl:'Remisiones recibidas', sub:'Módulo pendiente' },
-    { icon:'⛽', color:'purple', val: '—', lbl:'Diésel registrado', sub:'Módulo pendiente' },
+    { icon:'📦', color:'orange', val: DATA.remisiones.length, lbl:'Remisiones recibidas', sub:`${DATA.caja_recibidas||0} en caja` },
+    { icon:'⛽', color:'purple', val: DATA.diesel.length, lbl:'Diésel registrado', sub:'Registros totales' },
   ];
   document.getElementById('kpiGrid').innerHTML = kpis.map(k=>`
     <div class="kpi-card">
@@ -797,6 +884,168 @@ function renderGastos(){
 }
 ['filtroGastoOperador','filtroGastoCliente','filtroGastoDestino','filtroGastoEstado'].forEach(id=>document.getElementById(id).addEventListener('change', ()=>{ pageGastos=1; renderGastos(); }));
 
+/* ---------- CAJA ---------- */
+function cajaFiltrada(){
+  const operador = document.getElementById('filtroCajaOperador').value;
+  const estado = document.getElementById('filtroCajaEstado').value;
+  const q = (document.getElementById('searchInput').value||'').toLowerCase();
+  return DATA.caja.filter(c=>{
+    if (operador && c.operador!==operador) return false;
+    if (estado && c.estado!==estado) return false;
+    if (q && !`${c.operador} ${c.cliente} ${c.destino} ${c.fecha}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+function renderCaja(){
+  document.getElementById('cajaTotal').textContent = DATA.caja.length;
+  document.getElementById('cajaRecibidas').textContent = DATA.caja_recibidas || 0;
+  document.getElementById('cajaPendientes').textContent = DATA.caja_pendientes || 0;
+
+  const rows = cajaFiltrada();
+  document.getElementById('countCaja').textContent = `${rows.length} registro(s)`;
+  const start = (pageCaja-1)*PAGE_SIZE;
+  const pageRows = rows.slice(start, start+PAGE_SIZE);
+
+  document.getElementById('lista-caja').innerHTML = pageRows.length===0
+    ? `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:40px;">No hay registros de caja todavía.</td></tr>`
+    : pageRows.map(c=>{
+      const badge = c.estado==='Recibida' ? '<span class="badge green">✅ Recibida</span>' : '<span class="badge orange">⏳ Pendiente</span>';
+      return `<tr>
+        <td class="cell-muted">#${esc(c.numero)}</td>
+        <td>${esc(c.fecha)}</td>
+        <td class="cell-strong">${esc(c.operador)}</td>
+        <td>${esc(c.cliente)}</td>
+        <td>${esc(c.destino)}</td>
+        <td class="cell-muted" style="max-width:260px; white-space:normal;">${esc(c.observaciones)||'—'}</td>
+        <td>${badge}</td>
+      </tr>`;
+    }).join('');
+
+  renderPagination('pagCaja', rows.length, pageCaja, p=>{ pageCaja=p; renderCaja(); });
+}
+['filtroCajaOperador','filtroCajaEstado'].forEach(id=>document.getElementById(id).addEventListener('change', ()=>{ pageCaja=1; renderCaja(); }));
+
+/* ---------- REMISIONES ---------- */
+function remisionesFiltradas(){
+  const operador = document.getElementById('filtroRemOperador').value;
+  const fotos = document.getElementById('filtroRemFotos').value;
+  const q = (document.getElementById('searchInput').value||'').toLowerCase();
+  return DATA.remisiones.filter(r=>{
+    if (operador && r.operador!==operador) return false;
+    if (fotos && r.tieneFotos!==fotos) return false;
+    if (q && !`${r.operador} ${r.cliente} ${r.destino} ${r.fecha}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+function renderRemisiones(){
+  const rows = remisionesFiltradas();
+  document.getElementById('countRem').textContent = `${rows.length} remisión(es)`;
+  const start = (pageRem-1)*REM_PAGE_SIZE;
+  const pageRows = rows.slice(start, start+REM_PAGE_SIZE);
+
+  document.getElementById('lista-remisiones').innerHTML = pageRows.length===0
+    ? `<div class="empty-state" style="grid-column:1/-1"><div class="ic">🧾</div><h3>No hay remisiones todavía</h3><p>En cuanto un operador confirme un viaje y mande su remisión, aparecerá aquí.</p></div>`
+    : pageRows.map(r=>{
+      const fotoBadge = r.tieneFotos==='Sí' ? '<span class="badge blue">📸 Con fotos</span>' : '<span class="badge orange">Sin fotos</span>';
+      return `<div class="rem-card">
+        <div class="rem-head">
+          <div>
+            <div class="rem-op">${esc(r.operador)}</div>
+            <div class="rem-meta">📅 ${esc(r.fecha)}${r.fechaViaje ? ' · Viaje: '+esc(r.fechaViaje) : ''}<br>🏭 ${esc(r.cliente)||'—'} · 📍 ${esc(r.destino)||'—'}</div>
+          </div>
+          ${fotoBadge}
+        </div>
+        <div class="rem-datos">${esc(r.datos) || '(sin datos de texto)'}</div>
+      </div>`;
+    }).join('');
+
+  renderPagination('pagRem', rows.length, pageRem, p=>{ pageRem=p; renderRemisiones(); }, REM_PAGE_SIZE);
+}
+['filtroRemOperador','filtroRemFotos'].forEach(id=>document.getElementById(id).addEventListener('change', ()=>{ pageRem=1; renderRemisiones(); }));
+
+/* ---------- DIÉSEL ---------- */
+function dieselFiltrado(){
+  const operador = document.getElementById('filtroDieselOperador').value;
+  const q = (document.getElementById('searchInput').value||'').toLowerCase();
+  return DATA.diesel.filter(d=>{
+    if (operador && d.operador!==operador) return false;
+    if (q && !`${d.operador} ${d.tracto} ${d.vale} ${d.fecha}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+function renderDiesel(){
+  const all = DATA.diesel;
+  const litros = all.reduce((s,d)=>s+(d.litros||0),0);
+  const km = all.reduce((s,d)=>s+(d.kmRecorridos||0),0);
+  const rendValidos = all.map(d=>parseFloat(d.rendimiento)).filter(n=>!isNaN(n));
+  const rendProm = rendValidos.length ? (rendValidos.reduce((a,b)=>a+b,0)/rendValidos.length).toFixed(2) : '—';
+
+  document.getElementById('dieselTotal').textContent = all.length;
+  document.getElementById('dieselLitros').textContent = litros.toLocaleString('es-MX', {maximumFractionDigits:0}) + ' L';
+  document.getElementById('dieselKm').textContent = km.toLocaleString('es-MX', {maximumFractionDigits:0}) + ' km';
+  document.getElementById('dieselRend').textContent = rendProm + (rendProm!=='—' ? ' km/lt' : '');
+
+  const porOp = {};
+  all.forEach(d=>{ const r = parseFloat(d.rendimiento); if(!isNaN(r)){ (porOp[d.operador] = porOp[d.operador]||[]).push(r); } });
+  const labels = Object.keys(porOp);
+  const valores = labels.map(k => (porOp[k].reduce((a,b)=>a+b,0)/porOp[k].length).toFixed(2));
+  makeChart('chartDiesel', 'bar', labels, valores, PALETTE);
+
+  const rows = dieselFiltrado();
+  document.getElementById('countDiesel').textContent = `${rows.length} registro(s)`;
+  const start = (pageDiesel-1)*PAGE_SIZE;
+  const pageRows = rows.slice(start, start+PAGE_SIZE);
+
+  document.getElementById('lista-diesel').innerHTML = pageRows.length===0
+    ? `<tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:40px;">No hay registros de diésel todavía.</td></tr>`
+    : pageRows.map(d=>`<tr>
+        <td>${esc(d.fecha)}</td>
+        <td class="cell-muted">#${esc(d.vale)}</td>
+        <td class="cell-strong">${esc(d.operador)}</td>
+        <td>#${esc(d.tracto)}</td>
+        <td>${d.kmAnterior.toLocaleString('es-MX')}</td>
+        <td>${d.kmNuevo.toLocaleString('es-MX')}</td>
+        <td>${d.kmRecorridos.toLocaleString('es-MX')}</td>
+        <td>${d.litros}</td>
+        <td class="cell-strong">${esc(d.rendimiento)} km/lt</td>
+      </tr>`).join('');
+
+  renderPagination('pagDiesel', rows.length, pageDiesel, p=>{ pageDiesel=p; renderDiesel(); });
+}
+document.getElementById('filtroDieselOperador').addEventListener('change', ()=>{ pageDiesel=1; renderDiesel(); });
+
+/* ---------- CARGAS ---------- */
+function cargasFiltradas(){
+  const operador = document.getElementById('filtroCargaOperador').value;
+  const q = (document.getElementById('searchInput').value||'').toLowerCase();
+  return DATA.cargas.filter(c=>{
+    if (operador && c.operador!==operador) return false;
+    if (q && !`${c.operador} ${c.lugar} ${c.fecha}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+function renderCargas(){
+  const rows = cargasFiltradas();
+  document.getElementById('countCargas').textContent = `${rows.length} registro(s)`;
+  const start = (pageCargas-1)*PAGE_SIZE;
+  const pageRows = rows.slice(start, start+PAGE_SIZE);
+
+  document.getElementById('lista-cargas').innerHTML = pageRows.length===0
+    ? `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:40px;">No hay cargas registradas todavía.</td></tr>`
+    : pageRows.map(c=>`<tr>
+        <td>${esc(c.fecha)}</td>
+        <td class="cell-strong">${esc(c.operador)}</td>
+        <td>#${esc(c.tracto)}</td>
+        <td>${esc(c.lugar)}</td>
+        <td>${money(c.comida)}</td>
+        <td>${money(c.aguas)}</td>
+        <td class="cell-strong">${money((c.comida||0)+(c.aguas||0))}</td>
+      </tr>`).join('');
+
+  renderPagination('pagCargas', rows.length, pageCargas, p=>{ pageCargas=p; renderCargas(); });
+}
+document.getElementById('filtroCargaOperador').addEventListener('change', ()=>{ pageCargas=1; renderCargas(); });
+
 /* ---------- REPORTES ---------- */
 function renderReportes(){
   const conf = DATA.viajes.filter(v=>v.confirmado==='si').length;
@@ -809,8 +1058,9 @@ function renderReportes(){
 }
 
 /* ---------- PAGINACIÓN ---------- */
-function renderPagination(containerId, total, current, onGo){
-  const pages = Math.max(1, Math.ceil(total/PAGE_SIZE));
+function renderPagination(containerId, total, current, onGo, pageSize){
+  const size = pageSize || PAGE_SIZE;
+  const pages = Math.max(1, Math.ceil(total/size));
   const el = document.getElementById(containerId);
   if (total===0){ el.innerHTML=''; return; }
   let html = `<span>Página ${current} de ${pages}</span><div class="pages">
@@ -823,8 +1073,8 @@ function renderPagination(containerId, total, current, onGo){
 
 /* ---------- BÚSQUEDA GLOBAL ---------- */
 function filtrarBusquedaGlobal(q){
-  pageViajes = 1; pageGastos = 1;
-  renderViajes(); renderGastos();
+  pageViajes = 1; pageGastos = 1; pageCaja = 1; pageRem = 1; pageDiesel = 1; pageCargas = 1;
+  renderViajes(); renderGastos(); renderCaja(); renderRemisiones(); renderDiesel(); renderCargas();
 }
 document.getElementById('searchInput').addEventListener('input', e=> filtrarBusquedaGlobal(e.target.value));
 
