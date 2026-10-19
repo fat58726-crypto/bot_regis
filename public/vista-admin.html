@@ -163,6 +163,8 @@
   .badge.red{ background:var(--red-soft); color:var(--red); }
   .badge.blue{ background:var(--blue-soft); color:var(--blue); }
 
+  .compact thead th{ padding:12px 8px; font-size:11.5px; }
+  .compact tbody td{ padding:13px 8px; font-size:14px; }
   .pagination{ display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-top:1px solid var(--border); font-size:14px; color:var(--text-muted); }
   .pagination button{ background:#fff; border:1px solid var(--border); border-radius:8px; padding:7px 12px; cursor:pointer; font-size:14px; color:var(--text); }
   .pagination button:disabled{ opacity:.4; cursor:default; }
@@ -269,6 +271,10 @@
       <button class="nav-item" data-tab="gastos">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v10M9.5 9.5a2.5 2.5 0 0 1 2.5-1.5c1.7 0 2.5.9 2.5 2s-1 1.7-2.5 2-2.5.7-2.5 2 1 2 2.5 2a2.5 2.5 0 0 0 2.5-1.5"></path></svg>
         Gastos
+      </button>
+      <button class="nav-item" data-tab="semanal">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18"></path><path d="M8 15l2.5 2.5L16 13"></path></svg>
+        Gasto semanal
       </button>
       <button class="nav-item" data-tab="caja">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>
@@ -424,6 +430,51 @@
             <tbody id="lista-gastos"></tbody>
           </table>
           <div class="pagination" id="pagGastos"></div>
+        </div>
+      </section>
+
+      <!-- ===== GASTO SEMANAL ===== -->
+      <section class="tab-panel" id="tab-semanal">
+        <div class="panel-head">
+          <div><h2>Gasto semanal por operador</h2><div class="desc" id="semRango">—</div></div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <button class="btn-primary" id="semPrev" style="background:#fff; color:var(--text); border:1px solid var(--border); padding:10px 14px;">← Semana anterior</button>
+            <button class="btn-primary" id="semNext" style="background:#fff; color:var(--text); border:1px solid var(--border); padding:10px 14px;">Siguiente →</button>
+          </div>
+        </div>
+
+        <div id="semVacio" class="empty-state" style="display:none"></div>
+
+        <div id="semContenido">
+          <div class="summary-strip">
+            <div class="summary-item"><div class="lbl">Gasto total de la semana</div><div class="val blue" id="semTotal">—</div></div>
+            <div class="summary-item"><div class="lbl">vs. semana anterior</div><div class="val" id="semVar">—</div><div class="kpi-sub" id="semVarSub"></div></div>
+            <div class="summary-item"><div class="lbl">Viajes / registros</div><div class="val" id="semViajes">—</div></div>
+            <div class="summary-item"><div class="lbl">Promedio por operador</div><div class="val" id="semProm">—</div></div>
+          </div>
+
+          <div class="chart-grid">
+            <div class="card chart-box"><h3>Gasto por operador (esta semana vs. anterior)</h3><canvas id="chartSemOperador"></canvas></div>
+            <div class="card chart-box"><h3>Distribución por concepto</h3><canvas id="chartSemConcepto"></canvas></div>
+          </div>
+
+          <div class="table-wrap compact" style="margin-bottom:20px; overflow-x:auto;">
+            <table>
+              <thead><tr><th>Operador</th><th>Viajes</th><th>Anticipo</th><th>Comidas</th><th>Aguas</th><th>Casetas</th><th>Pensión</th><th>Federales</th><th>Otros</th><th>Total</th><th>Saldo</th></tr></thead>
+              <tbody id="semTabla"></tbody>
+            </table>
+          </div>
+          <div class="kpi-sub" style="margin:-8px 0 20px 4px">Saldo = anticipo − gastos. En rojo (negativo) se le debe al operador.</div>
+
+          <div class="card chart-box"><h3>Tendencia — últimas 8 semanas</h3><canvas id="chartSemTendencia" style="max-height:220px"></canvas></div>
+
+          <div class="table-wrap" style="margin-top:20px;">
+            <table>
+              <thead><tr><th>Fecha</th><th>Operador</th><th>Destino</th><th>Total</th></tr></thead>
+              <tbody id="semTop"></tbody>
+            </table>
+          </div>
+          <div class="kpi-sub" style="margin:8px 0 0 4px">Los 5 viajes de mayor gasto de la semana · <span id="semUltimo"></span></div>
         </div>
       </section>
 
@@ -645,6 +696,80 @@ async function fetchJSON(url){
   return data;
 }
 
+/* ---------- GASTO SEMANAL ---------- */
+let semRef = '';          // fecha (AAAA-MM-DD) dentro de la semana mostrada; vacío = semana actual
+let SEM = null;
+const CONCEPTO_LBL = { comida:'Comidas', agua:'Aguas', casetas:'Casetas', pension:'Pensión', federales:'Federales', otros:'Otros' };
+const cap1 = s => (s||'').charAt(0) + (s||'').slice(1).toLowerCase();
+function fmtISO(iso){ const [y,m,d] = iso.split('-').map(Number); return `${d} ${MESES[m-1]}`; }
+
+async function cargarSemanal(){
+  try{
+    SEM = await fetchJSON(`/api/admin/semanal?token=${TOKEN}${semRef ? '&ref='+semRef : ''}`);
+  }catch(e){ SEM = { error: e.message }; }
+  renderSemanal();
+}
+
+function renderSemanal(){
+  const vacio = document.getElementById('semVacio'), cont = document.getElementById('semContenido');
+  const mostrarVacio = (ic, titulo, txt) => {
+    vacio.innerHTML = `<div class="ic">${ic}</div><h3>${titulo}</h3><p>${txt}</p>`;
+    vacio.style.display = 'block'; cont.style.display = 'none';
+    document.getElementById('semPrev').style.display = 'none';
+    document.getElementById('semNext').style.display = 'none';
+    document.getElementById('semRango').textContent = '—';
+  };
+  if (!SEM || SEM.error) return mostrarVacio('⚠️', 'No se pudo cargar el gasto semanal', esc(SEM ? SEM.error : ''));
+  if (SEM.sinPestana) return mostrarVacio('📥', 'Aún no hay datos cargados',
+    'Manda el archivo <strong>GASTOS_2026.xlsx</strong> al bot de Telegram (con el clip → Archivo). El bot crea la pestaña BASE_EXCEL y aquí aparece el dashboard.');
+
+  vacio.style.display = 'none'; cont.style.display = 'block';
+  const pv = document.getElementById('semPrev'), nx = document.getElementById('semNext');
+  pv.style.display = ''; nx.style.display = SEM.refSiguiente ? '' : 'none';
+  pv.onclick = () => { semRef = SEM.refAnterior; cargarSemanal(); };
+  nx.onclick = () => { semRef = SEM.refSiguiente; cargarSemanal(); };
+
+  document.getElementById('semRango').textContent = SEM.semana.texto;
+  document.getElementById('semTotal').textContent = money(SEM.total);
+  document.getElementById('semViajes').textContent = SEM.nViajes;
+  document.getElementById('semProm').textContent = money(SEM.operadores.length ? SEM.total/SEM.operadores.length : 0);
+  const v = SEM.variacion, vEl = document.getElementById('semVar');
+  vEl.textContent = v==null ? '—' : `${v>0?'▲':v<0?'▼':'='} ${Math.abs(v).toFixed(0)}%`;
+  vEl.className = 'val ' + (v>0 ? 'red' : 'green');
+  document.getElementById('semVarSub').textContent = `Semana anterior: ${money(SEM.previaTotal)}`;
+  document.getElementById('semUltimo').textContent = SEM.ultimoDato ? `Datos cargados hasta el ${fmtISO(SEM.ultimoDato)}` : '';
+
+  // Barras: esta semana vs anterior (2 series)
+  destroyChart('chartSemOperador');
+  charts.chartSemOperador = new Chart(document.getElementById('chartSemOperador'), {
+    type:'bar',
+    data:{ labels: SEM.operadores.map(o=>cap1(o.nombre)), datasets:[
+      { label:'Esta semana', data: SEM.operadores.map(o=>o.total), backgroundColor:'#2563eb', borderRadius:8 },
+      { label:'Semana anterior', data: SEM.operadores.map(o=>o.previo), backgroundColor:'#c7d2e3', borderRadius:8 } ]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ position:'bottom', labels:{ font:{ family:'Inter', size:13 } } } },
+      scales:{ y:{ beginAtZero:true, grid:{ color:'#f0f1f4' } }, x:{ grid:{ display:false } } } }
+  });
+
+  const ks = Object.keys(CONCEPTO_LBL).filter(k => SEM.conceptos[k] > 0);
+  makeChart('chartSemConcepto','doughnut', ks.map(k=>CONCEPTO_LBL[k]), ks.map(k=>SEM.conceptos[k]), PALETTE);
+
+  document.getElementById('semTabla').innerHTML = SEM.operadores.map(o=>`<tr>
+      <td class="cell-strong">${esc(cap1(o.nombre))}</td><td>${o.viajes}</td><td>${money(o.anticipo)}</td>
+      ${Object.keys(CONCEPTO_LBL).map(k=>`<td class="${o[k]?'':'cell-muted'}">${o[k]?money(o[k]):'—'}</td>`).join('')}
+      <td class="cell-strong">${money(o.total)}</td>
+      <td style="color:${o.saldo<0?'var(--red)':'var(--green)'}; font-weight:700;">${o.saldo<0?'-':''}${money(Math.abs(o.saldo))}</td>
+    </tr>`).join('') || `<tr><td colspan="11" style="text-align:center; color:var(--text-muted); padding:40px;">Sin registros esta semana.</td></tr>`;
+
+  const maxT = Math.max(...SEM.tendencia.map(t=>t.total));
+  makeChart('chartSemTendencia','bar', SEM.tendencia.map(t=>fmtISO(t.ini)), SEM.tendencia.map(t=>t.total),
+    SEM.tendencia.map((t,i)=> i===SEM.tendencia.length-1 ? '#2563eb' : '#c7d2e3'));
+
+  document.getElementById('semTop').innerHTML = SEM.top.map(g=>`<tr>
+      <td>${fmtISO(g.fecha)}</td><td class="cell-strong">${esc(cap1(g.operador))}</td><td>${esc(g.destino)}</td><td class="cell-strong">${money(g.total)}</td>
+    </tr>`).join('') || `<tr><td colspan="4" style="text-align:center; color:var(--text-muted); padding:30px;">Sin viajes esta semana.</td></tr>`;
+}
+
 async function cargarDatos(){
   const btn = document.getElementById('btnRefresh');
   btn.classList.add('spinning');
@@ -675,6 +800,7 @@ async function cargarDatos(){
     renderDiesel();
     renderCargas();
     poblarSelects();
+    cargarSemanal();
   }catch(e){
     document.getElementById('globalLoading').innerHTML =
       `<div style="color:var(--red); text-align:center;"><strong>⚠️ ${esc(e.message)}</strong><br><span style="color:var(--text-muted); font-size:14px;">Verifica que el token en la URL sea correcto.</span></div>`;
@@ -1109,6 +1235,7 @@ document.getElementById('btn-guardar').addEventListener('click', async ()=>{
 
 cargarDatos();
 setInterval(cargarDatos, 60000);
+if (location.hash === '#semanal') document.querySelector('.nav-item[data-tab="semanal"]').click();
 </script>
 </body>
 </html>
