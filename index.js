@@ -4,6 +4,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const { google }  = require('googleapis');
 const express     = require('express');
 const path        = require('path');
+const dashboard   = require('./dashboard');
+const { importarExcel } = require('./importarExcel');
  
 const TOKEN       = process.env.BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
@@ -16,6 +18,12 @@ const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_TELEGRAM_
  
 const SHEET_BOT    = '1i7uciYXLNuZ-DPxE8H0TAQyuegqVzegE751tUNhi7Qc';
 const SHEET_DIESEL = '1tEmPW1BGE7MgMXD5iOsLwq8G46GxKkT8sRuqBkdFUOk';
+
+// Dashboard semanal: pestaña del Sheet donde se carga el Excel (variables opcionales en Railway)
+const DASH_TAB  = process.env.DASHBOARD_TAB  || 'BASE_EXCEL';
+const DASH_CRON = process.env.DASHBOARD_CRON || '0 9 * * 6';          // sábados 9:00 am (hora CDMX)
+const DASH_TOKEN = () => process.env.DASHBOARD_TOKEN || 'regis2024';
+const panelUrl  = () => WEBHOOK_URL ? `${WEBHOOK_URL}/dashboard?token=${DASH_TOKEN()}#semanal` : '';
  
 const bot = new TelegramBot(TOKEN, { webHook: false });
 const app = express();
@@ -111,7 +119,7 @@ const MENU_OP = { reply_markup: { inline_keyboard: [
 const MENU_ADMIN = { reply_markup: { inline_keyboard: [
   [{ text: '📋 Ver viajes',       callback_data: 'ver_viajes'     }, { text: '➕ Nuevos viajes', callback_data: 'nuevos_viajes' }],
   [{ text: '👥 Operadores',       callback_data: 'ver_operadores' }, { text: '⛽ Diésel',        callback_data: 'iniciar_diesel' }],
-  [{ text: '📊 Resumen',          callback_data: 'ver_resumen'    }],
+  [{ text: '📊 Resumen',          callback_data: 'ver_resumen'    }, { text: '📈 Gasto semanal', callback_data: 'ver_semanal' }],
 ]}};
  
 const BTN_CANCELAR         = { reply_markup: { inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'cancelar' }]] }};
@@ -543,6 +551,14 @@ bot.on('callback_query', async (query) => {
       return;
     }
  
+    if (data === 'ver_semanal') {
+      if (!isAdmin(chatId)) return;
+      try {
+        await dashboard.enviarResumen({ bot, chatIds: [chatId], getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB, panelUrl: panelUrl() });
+      } catch (e) { bot.sendMessage(chatId, `⚠️ ${e.message}`); }
+      return;
+    }
+
     if (data === 'ver_resumen') {
       if (!isAdmin(chatId)) return;
       const ops    = await getOperadores();
@@ -700,6 +716,43 @@ bot.on('message', async (msg) => {
   }
 });
  
+// ═══════════════════════════════════════════════════════════
+//   GASTO SEMANAL: comando y carga del Excel (solo admins)
+// ═══════════════════════════════════════════════════════════
+bot.onText(/\/semanal/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return;
+  try {
+    await dashboard.enviarResumen({ bot, chatIds: [chatId], getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB, panelUrl: panelUrl() });
+  } catch (e) {
+    console.error('Error /semanal:', e.message);
+    bot.sendMessage(chatId, `⚠️ ${e.message}`);
+  }
+});
+
+// El admin manda GASTOS_2026.xlsx al bot → se carga a BASE_EXCEL → se manda el resumen semanal.
+bot.on('document', async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return;
+  const doc = msg.document;
+  if (!/\.xlsx$/i.test(doc.file_name || '')) {
+    return bot.sendMessage(chatId, '📎 Para actualizar el gasto semanal mándame el Excel en formato .xlsx');
+  }
+  try {
+    await bot.sendMessage(chatId, '📥 Recibí el Excel, lo estoy cargando...');
+    const url = await bot.getFileLink(doc.file_id);
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Telegram respondió ${resp.status} al descargar el archivo`);
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    const r = await importarExcel({ buffer, getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB });
+    await bot.sendMessage(chatId, `✅ Excel cargado en la pestaña ${r.tab}\n📄 ${r.n} registros (del ${r.desde} al ${r.hasta})`);
+    await dashboard.enviarResumen({ bot, chatIds: [chatId], getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB, panelUrl: panelUrl() });
+  } catch (e) {
+    console.error('Error cargando Excel:', e.message);
+    bot.sendMessage(chatId, `⚠️ No pude cargar el Excel: ${e.message}`).catch(() => {});
+  }
+});
+
 // ═══════════════════════════════════════════════════════════
 //   FOTOS
 // ═══════════════════════════════════════════════════════════
@@ -908,12 +961,27 @@ app.get('/api/admin/cargas', async (req, res) => {
   }
 });
  
+app.get('/api/admin/semanal', async (req, res) => {
+  if (req.query.token !== DASH_TOKEN()) return res.status(401).json({ ok: false });
+  try {
+    const ref = /^\d{4}-\d{2}-\d{2}$/.test(req.query.ref || '') ? req.query.ref : null;
+    const datos = await dashboard.datosSemanales({ getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB, ref });
+    res.json({ ok: true, ...datos });
+  } catch (e) {
+    console.error('Error API semanal:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════
 //   ARRANQUE
 // ═══════════════════════════════════════════════════════════
 app.listen(PORT, async () => {
   console.log(`🚛 Servidor en puerto ${PORT}`);
   console.log(`👥 Admins: ${ADMIN_IDS.length} — ${ADMIN_IDS.join(', ')}`);
+  try {
+    dashboard.programar({ bot, chatIds: ADMIN_IDS, getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB, panelUrl: panelUrl(), expr: DASH_CRON });
+  } catch (e) { console.error('❌ No se pudo programar el resumen semanal:', e.message); }
  
   if (!WEBHOOK_URL) {
     console.error('❌ Falta WEBHOOK_URL en variables de entorno.');
