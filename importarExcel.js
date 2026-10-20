@@ -82,4 +82,60 @@ async function importarExcel({ buffer, getSheets, spreadsheetId, tab }) {
   return { ...r, origen, desde: serialAISO(Math.min(...fechas)), hasta: serialAISO(Math.max(...fechas)) };
 }
 
-module.exports = { importarExcel, extraerGastos };
+
+// ── Excel de RENDIMIENTOS (una pestaña ECO#NN por tractor) ───────────
+const esHojaEco = nombre => /^ECO\s*#/i.test(String(nombre).trim());
+
+/** 'rendimientos' si el libro trae pestañas ECO#NN; si no, 'gastos' */
+async function detectarTipo(buffer) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+  const nombres = wb.worksheets.map(w => w.name);
+  const tieneEco = nombres.some(esHojaEco);
+  const tieneGastos = nombres.some(n => n.trim().toUpperCase() === 'BASE' || MESES.includes(n.trim().toUpperCase()));
+  return tieneEco && !tieneGastos ? 'rendimientos' : 'gastos';
+}
+
+/**
+ * Crea en el Google Sheet de diésel una pestaña por cada hoja ECO#NN del Excel.
+ * NUNCA pisa una pestaña que ya existe (ahí pueden estar cargas capturadas por el bot): solo la reporta como omitida.
+ */
+async function importarRendimientos({ buffer, getSheets, spreadsheetId }) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+  const sheets = getSheets();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties.title' });
+  const existentes = new Set(meta.data.sheets.map(h => h.properties.title.trim().toLowerCase()));
+  const creadas = [], omitidas = [];
+  let filasTotal = 0;
+
+  for (const ws of wb.worksheets) {
+    if (!esHojaEco(ws.name)) continue;
+    const titulo = ws.name.trim();
+    if (existentes.has(titulo.toLowerCase())) { omitidas.push(titulo); continue; }
+
+    // matriz A1:J(última fila con fecha); F y H se escriben como fórmulas, igual que las filas que agrega el bot
+    const mat = [];
+    let ultima = 2;
+    ws.eachRow({ includeEmpty: false }, (row, n) => { if (n >= 3 && valorCelda(row.getCell(1)) != null && valorCelda(row.getCell(1)) !== '') ultima = Math.max(ultima, n); });
+    for (let r = 1; r <= ultima; r++) {
+      const fila = [];
+      for (let c = 1; c <= 10; c++) fila.push(valorCelda(ws.getRow(r).getCell(c)) ?? '');
+      if (r >= 3 && fila[0] !== '') {
+        fila[5] = `=IF(E${r}="","",D${r}-E${r})`;
+        fila[7] = `=IF(OR(E${r}="",G${r}=0),"",(D${r}-E${r})/G${r})`;
+      } else if (r >= 3) { fila[5] = ''; fila[7] = ''; }
+      mat.push(fila);
+    }
+    await sheets.spreadsheets.batchUpdate({ spreadsheetId, resource: { requests: [{ addSheet: { properties: { title: titulo } } }] } });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId, range: `'${titulo.replace(/'/g, "''")}'!A1`, valueInputOption: 'USER_ENTERED', resource: { values: mat },
+    });
+    creadas.push(titulo);
+    filasTotal += mat.filter((f, i) => i >= 2 && f[0] !== '').length;
+  }
+  if (!creadas.length && !omitidas.length) throw new Error('No encontré hojas ECO#NN en ese Excel.');
+  return { creadas, omitidas, filas: filasTotal };
+}
+
+module.exports = { importarExcel, extraerGastos, detectarTipo, importarRendimientos };

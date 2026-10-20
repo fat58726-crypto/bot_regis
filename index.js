@@ -5,7 +5,8 @@ const { google }  = require('googleapis');
 const express     = require('express');
 const path        = require('path');
 const dashboard   = require('./dashboard');
-const { importarExcel } = require('./importarExcel');
+const vale        = require('./vale');
+const { importarExcel, detectarTipo, importarRendimientos } = require('./importarExcel');
  
 const TOKEN       = process.env.BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
@@ -17,7 +18,7 @@ const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_TELEGRAM_
   .filter(s => s.length > 0);
  
 const SHEET_BOT    = '1i7uciYXLNuZ-DPxE8H0TAQyuegqVzegE751tUNhi7Qc';
-const SHEET_DIESEL = '1tEmPW1BGE7MgMXD5iOsLwq8G46GxKkT8sRuqBkdFUOk';
+const SHEET_DIESEL = process.env.DIESEL_SHEET_ID || '1tEmPW1BGE7MgMXD5iOsLwq8G46GxKkT8sRuqBkdFUOk';   // Google Sheet con las hojas ECO#NN
 
 // Dashboard semanal: pestaña del Sheet donde se carga el Excel (variables opcionales en Railway)
 const DASH_TAB  = process.env.DASHBOARD_TAB  || 'BASE_EXCEL';
@@ -114,6 +115,7 @@ const MENU_OP = { reply_markup: { inline_keyboard: [
   [{ text: '✅ Confirmar mi viaje',  callback_data: 'confirmar_viaje' }],
   [{ text: '💰 Reportar mis gastos', callback_data: 'iniciar_gastos'  }],
   [{ text: '📦 Registrar carga',     callback_data: 'iniciar_carga'   }],
+  [{ text: '⛽ Reportar diésel',     callback_data: 'op_diesel'       }],
 ]}};
  
 const MENU_ADMIN = { reply_markup: { inline_keyboard: [
@@ -158,6 +160,23 @@ const P_DIESEL = [
   { campo: 'vale',     pregunta: '🔢 ¿Número de vale?' },
 ];
  
+// Diésel con foto del vale (operadores y admins)
+const BTN_HOY = { reply_markup: { inline_keyboard: [
+  [{ text: '📅 Hoy', callback_data: 'dv_hoy' }],
+  [{ text: '❌ Cancelar', callback_data: 'cancelar' }],
+]}};
+const MENU_CONFIRM_DV = { reply_markup: { inline_keyboard: [[{ text: '✅ Guardar', callback_data: 'dv_ok' }, { text: '🔄 Repetir', callback_data: 'dv_repetir' }]] }};
+
+// Evita que varias fotos (álbum) o mensajes del mismo chat se pisen al guardar el estado
+const _colas = new Map();
+function serializar(chatId, fn) {
+  const prev = _colas.get(chatId) || Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  _colas.set(chatId, next);
+  next.finally(() => { if (_colas.get(chatId) === next) _colas.delete(chatId); }).catch(() => {});
+  return next;
+}
+
 const NUMERICOS = ['anticipo','comida','aguas','casetas','pension','federales','otros','dias','km_nuevo','km_ant','litros'];
  
 const P_VIAJE = [
@@ -546,11 +565,67 @@ bot.on('callback_query', async (query) => {
  
     if (data === 'iniciar_diesel') {
       if (!isAdmin(chatId)) return;
-      await setEstado(chatId, { estado: 'diesel', paso: 0, datos: {} });
-      bot.sendMessage(chatId, `⛽ *Registrar Diésel*\n\n${P_DIESEL[0].pregunta}`, { parse_mode:'Markdown', ...BTN_CANCELAR });
+      await iniciarVale(chatId);
       return;
     }
  
+    if (data === 'op_diesel' || data === 'dv_repetir') {
+      await iniciarVale(chatId);
+      return;
+    }
+
+    if (data === 'dv_hoy') {
+      const st = await getEstado(chatId);
+      if (!st || st.estado !== 'dv' || st.preg !== 'fecha') return;
+      st.datos.fecha = hoyISO();
+      await avanzarVale(chatId, st);
+      return;
+    }
+
+    if (data.startsWith('dv_op_')) {
+      if (!isAdmin(chatId)) return;
+      const st = await getEstado(chatId);
+      if (!st || st.estado !== 'dv' || st.preg !== 'operador') return;
+      const op = (await getOperadores())[data.replace('dv_op_', '')];
+      if (!op) return bot.sendMessage(chatId, '❌ No encontré a ese operador.');
+      st.datos.operador = op.nombre; st.datos.tracto = op.tracto;
+      await avanzarVale(chatId, st);
+      return;
+    }
+
+    if (data === 'dv_ok') {
+      const st = await getEstado(chatId);
+      if (!st || st.estado !== 'dv' || st.fase !== 'revision') return;
+      const d = st.datos;
+      await clearEstado(chatId);
+      const menu = isAdmin(chatId) ? MENU_ADMIN : MENU_OP;
+      let r;
+      try {
+        r = await registrarDiesel({ fechaISO: d.fecha, vale: d.folio, operador: d.operador, tracto: d.tracto,
+          km_nuevo: d.km_nuevo, km_ant: d.km_ant, litros: d.litros, foto: d.fotos.join('|') });
+      } catch (e) {
+        console.error('❌ ERROR guardando diésel:', e.message);
+        return bot.sendMessage(chatId, '⚠️ Error guardando. Avisa a Fabiola.\n\nUsa /reset para reiniciar.', menu);
+      }
+      bot.sendMessage(chatId,
+        `⛽ *Carga de diésel registrada* ✅\n\nVale #${d.folio}\nKM recorridos: ${r.difKM || '—'}\nRendimiento: ${r.rend} km/lt`,
+        { parse_mode:'Markdown', ...menu });
+      const alertas = [];
+      if (d.km_ant > 0 && d.km_nuevo <= d.km_ant) alertas.push('⚠️ El kilometraje no es mayor al de la carga anterior');
+      if (r.rend !== '—' && (parseFloat(r.rend) < 1.2 || parseFloat(r.rend) > 4)) alertas.push(`⚠️ Rendimiento fuera de lo normal (${r.rend} km/lt)`);
+      if (r.tabTracto === null) alertas.push(`📗 No encontré la hoja ECO#${d.tracto} en el Excel de rendimientos; quedó solo en la bitácora "Diesel"`);
+      const destinos = ADMIN_IDS.filter(id => id !== String(chatId));
+      for (const id of destinos) {
+        for (const f of d.fotos.slice(0, 3)) bot.sendPhoto(id, f, { caption: `⛽ Vale #${d.folio} — ${d.operador} | Tracto #${d.tracto}` }).catch(() => {});
+        bot.sendMessage(id,
+          `⛽ *Diésel de ${d.operador}* — Tracto #${d.tracto}\n📅 ${isoAMx(d.fecha)} | Vale #${d.folio}\n` +
+          `📏 ${d.km_ant || '—'} → ${d.km_nuevo} (${r.difKM || '—'} km) | ⛽ ${d.litros} lts\n📈 ${r.rend} km/lt` +
+          (r.tabTracto ? `\n📗 Guardado en la hoja ${r.tabTracto}` : '') +
+          (alertas.length ? `\n\n${alertas.join('\n')}` : ''), { parse_mode:'Markdown' }).catch(() => {});
+      }
+      return;
+    }
+
     if (data === 'ver_semanal') {
       if (!isAdmin(chatId)) return;
       try {
@@ -578,7 +653,7 @@ bot.on('callback_query', async (query) => {
 // ═══════════════════════════════════════════════════════════
 //   MENSAJES DE TEXTO
 // ═══════════════════════════════════════════════════════════
-bot.on('message', async (msg) => {
+bot.on('message', (msg) => serializar(msg.chat.id, async () => {
   const chatId = msg.chat.id;
   if (!msg.text || msg.text.startsWith('/')) return;
  
@@ -678,6 +753,19 @@ bot.on('message', async (msg) => {
       return;
     }
  
+    if (estado === 'dv') {
+      const texto = msg.text.trim();
+      if (st.fase === 'fotos') {
+        if (texto.toLowerCase() === 'listo') await cerrarFotosVale(chatId, st);
+        else bot.sendMessage(chatId, '📸 Manda las fotos del vale y los tickets, o escribe *listo* cuando termines.', { parse_mode:'Markdown' });
+      } else if (st.fase === 'preguntas') {
+        await responderPreguntaVale(chatId, st, texto);
+      } else {
+        bot.sendMessage(chatId, 'Toca ✅ Guardar o 🔄 Repetir 👆');
+      }
+      return;
+    }
+
     if (estado === 'diesel') {
       const paso  = st.paso;
       const campo = P_DIESEL[paso].campo;
@@ -714,7 +802,7 @@ bot.on('message', async (msg) => {
     console.error('Error message handler:', e.message);
     bot.sendMessage(chatId, '❌ Error. Usa /reset e intenta de nuevo.').catch(()=>{});
   }
-});
+}));
  
 // ═══════════════════════════════════════════════════════════
 //   GASTO SEMANAL: comando y carga del Excel (solo admins)
@@ -744,6 +832,14 @@ bot.on('document', async (msg) => {
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`Telegram respondió ${resp.status} al descargar el archivo`);
     const buffer = Buffer.from(await resp.arrayBuffer());
+    if (await detectarTipo(buffer) === 'rendimientos') {          // Excel de rendimientos por tractor
+      const r = await importarRendimientos({ buffer, getSheets, spreadsheetId: SHEET_DIESEL });
+      let t = `✅ *Rendimientos cargados*\n\n`;
+      if (r.creadas.length) t += `📗 Hojas creadas: ${r.creadas.join(', ')}\n📄 ${r.filas} cargas pasadas\n`;
+      if (r.omitidas.length) t += `\n⏭️ Ya existían y NO las toqué: ${r.omitidas.join(', ')}\n(Así no se borra lo que el bot ya registró.)`;
+      t += `\n\nYa pueden reportar diésel con el botón ⛽.`;
+      return bot.sendMessage(chatId, t, { parse_mode: 'Markdown' });
+    }
     const r = await importarExcel({ buffer, getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB });
     await bot.sendMessage(chatId, `✅ Excel cargado en la pestaña ${r.tab}\n📄 ${r.n} registros (del ${r.desde} al ${r.hasta})`);
     await dashboard.enviarResumen({ bot, chatIds: [chatId], getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB, panelUrl: panelUrl() });
@@ -756,12 +852,21 @@ bot.on('document', async (msg) => {
 // ═══════════════════════════════════════════════════════════
 //   FOTOS
 // ═══════════════════════════════════════════════════════════
-bot.on('photo', async (msg) => {
+bot.on('photo', (msg) => serializar(msg.chat.id, async () => {
   const chatId = msg.chat.id;
   const fileId = msg.photo[msg.photo.length - 1].file_id;
   try {
     const st     = await getEstado(chatId);
     const estado = st?.estado;
+    if (estado === 'dv') {
+      if (st.fase === 'fotos' || st.fase === 'preguntas') {
+        const guardada = await procesarFotoVale(chatId, st, fileId);
+        if (guardada) { if (st.fase === 'preguntas') await cerrarFotosVale(chatId, st); else await setEstado(chatId, st); }
+      } else {
+        bot.sendMessage(chatId, 'Toca ✅ Guardar o 🔄 Repetir 👆');
+      }
+      return;
+    }
     if (estado === 'diesel_foto') {
       await guardarDiesel(chatId, fileId, st.datos);
       return;
@@ -772,32 +877,277 @@ bot.on('photo', async (msg) => {
       bot.sendMessage(chatId, `📸 Foto recibida. Sigue mandando o escribe *listo*`, { parse_mode:'Markdown' });
       return;
     }
+    if (isAdmin(chatId) && !estado) {                       // foto suelta de un admin = vale de diésel
+      if (await iniciarVale(chatId, true)) {
+        const st2 = await getEstado(chatId);
+        if (await procesarFotoVale(chatId, st2, fileId)) await setEstado(chatId, st2);
+      }
+      return;
+    }
     bot.sendMessage(chatId, 'Para reportar usa el menú 👇', MENU_OP);
   } catch(e) {
     console.error('Error photo handler:', e.message);
   }
-});
+}));
  
-// ── GUARDAR DIESEL ────────────────────────────────────────
-async function guardarDiesel(chatId, fotoFileId, d) {
-  await clearEstado(chatId);
-  const fecha = new Date().toLocaleDateString('es-MX');
-  const difKM = toNum(d.km_nuevo) - toNum(d.km_ant);
-  const rend  = difKM > 0 ? (difKM / toNum(d.litros)).toFixed(2) : '—';
+// ═══════════════════════════════════════════════════════════
+//   DIÉSEL: bitácora (pestaña "Diesel") + hoja de cada tractor (ECO#NN)
+// ═══════════════════════════════════════════════════════════
+const hoyISO = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+const isoAMx = iso => { const [y, m, d] = String(iso).split('-'); return `${d}/${m}/${y}`; };
+const qTab   = t => `'${String(t).replace(/'/g, "''")}'`;
+const limpio = v => parseFloat(String(v ?? '').replace(/,/g, '')) || 0;
+// "ECO#07", "ECO# 8 ", "ECO #9" → coincide con tracto 7, 8, 9
+const esTabDelTracto = (titulo, tracto) => {
+  const m = String(titulo).trim().match(/^ECO\s*#\s*0*(\d+)$/i);
+  return !!m && Number(m[1]) === Number(tracto);
+};
+
+async function tabsDiesel() {
+  const meta = await getSheets().spreadsheets.get({ spreadsheetId: SHEET_DIESEL, fields: 'sheets.properties.title' });
+  return meta.data.sheets.map(h => h.properties.title);
+}
+
+/** Último kilometraje conocido del tracto: el mayor entre la bitácora y su hoja ECO#NN. 0 si no hay. */
+async function ultimoKm(tracto) {
+  let max = 0;
   try {
     const rows = await getRows(SHEET_DIESEL, 'Diesel');
-    if (rows.length === 0) await appendRow(SHEET_DIESEL, 'Diesel', ['Fecha','Vale','Operador','Tracto','KM Nuevo','KM Anterior','KM Recorridos','Litros','Rendimiento km/lt']);
-    await appendRow(SHEET_DIESEL, 'Diesel', [fecha, d.vale, d.operador, d.tracto, toNum(d.km_nuevo), toNum(d.km_ant), difKM, toNum(d.litros), rend]);
-  } catch(e) {
+    const h = rows[0] || [], iT = h.indexOf('Tracto'), iK = h.indexOf('KM Nuevo');
+    if (iT >= 0 && iK >= 0) rows.slice(1).forEach(r => { if (Number(r[iT]) === Number(tracto)) max = Math.max(max, limpio(r[iK])); });
+  } catch (e) { console.error('ultimoKm bitácora:', e.message); }
+  try {
+    const titulo = (await tabsDiesel()).find(t => esTabDelTracto(t, tracto));
+    if (titulo) {
+      const res = await getSheets().spreadsheets.values.get({ spreadsheetId: SHEET_DIESEL, range: `${qTab(titulo)}!D3:D2000`, valueRenderOption: 'UNFORMATTED_VALUE' });
+      (res.data.values || []).forEach(r => { if (typeof r[0] === 'number') max = Math.max(max, r[0]); });
+    }
+  } catch (e) { console.error('ultimoKm hoja tracto:', e.message); }
+  return max;
+}
+
+/** Agrega la carga en la siguiente fila libre de la hoja del tracto, respetando sus fórmulas. */
+async function escribirEnHojaTracto({ fechaISO, vale, operador, tracto, km_nuevo, km_ant, litros }) {
+  const titulo = (await tabsDiesel()).find(t => esTabDelTracto(t, tracto));
+  if (!titulo) return null;
+  const res  = await getSheets().spreadsheets.values.get({ spreadsheetId: SHEET_DIESEL, range: `${qTab(titulo)}!A1:A2000` });
+  const colA = res.data.values || [];
+  let ultima = 2;                                                   // fila 2 = encabezados
+  colA.forEach((r, i) => { if (i >= 2 && r[0] !== undefined && String(r[0]).trim() !== '') ultima = i + 1; });
+  const f = ultima + 1;
+  await updateRow(SHEET_DIESEL, `${qTab(titulo)}!A${f}:I${f}`, [
+    fechaISO, Number(vale) || vale, Number(tracto), km_nuevo, km_ant > 0 ? km_ant : '',
+    `=IF(E${f}="","",D${f}-E${f})`, litros,
+    `=IF(OR(E${f}="",G${f}=0),"",(D${f}-E${f})/G${f})`,
+    `Reportó ${operador} (Telegram)`,
+  ]);
+  return titulo;
+}
+
+async function registrarDiesel({ fechaISO, vale, operador, tracto, km_nuevo, km_ant, litros, foto }) {
+  const difKM = km_ant > 0 ? +(km_nuevo - km_ant).toFixed(1) : 0;
+  const rend  = difKM > 0 && litros > 0 ? (difKM / litros).toFixed(2) : '—';
+  // 1) bitácora con foto (se crea la pestaña "Diesel" si no existe)
+  await asegurarTab(SHEET_DIESEL, 'Diesel');
+  const rows = await getRows(SHEET_DIESEL, 'Diesel');
+  if (rows.length === 0) await appendRow(SHEET_DIESEL, 'Diesel', ['Fecha','Vale','Operador','Tracto','KM Nuevo','KM Anterior','KM Recorridos','Litros','Rendimiento km/lt','Foto']);
+  else if (!(rows[0] || []).includes('Foto')) await updateCell(SHEET_DIESEL, 'Diesel!J1', 'Foto');
+  await appendRow(SHEET_DIESEL, 'Diesel', [isoAMx(fechaISO), vale, operador, tracto, km_nuevo, km_ant, difKM, litros, rend, foto || '']);
+  // 2) hoja del tracto (si existe). Si falla, la bitácora ya quedó guardada.
+  let tabTracto = null;
+  try { tabTracto = await escribirEnHojaTracto({ fechaISO, vale, operador, tracto, km_nuevo, km_ant, litros }); }
+  catch (e) { console.error('❌ No pude escribir en la hoja del tracto:', e.message); }
+  return { difKM, rend, tabTracto };
+}
+
+async function asegurarTab(sheetId, titulo) {
+  const meta = await getSheets().spreadsheets.get({ spreadsheetId: sheetId, fields: 'sheets.properties.title' });
+  if (meta.data.sheets.some(h => h.properties.title === titulo)) return false;
+  await getSheets().spreadsheets.batchUpdate({ spreadsheetId: sheetId, resource: { requests: [{ addSheet: { properties: { title: titulo } } }] } });
+  return true;
+}
+
+async function valeRegistrado(folio) {
+  try {
+    const rows = await getRows(SHEET_DIESEL, 'Diesel');
+    const h = rows[0] || [], iV = h.indexOf('Vale');
+    if (iV < 0) return null;
+    const r = rows.slice(1).find(x => String(x[iV]).trim() === String(folio).trim());
+    return r ? { fecha: r[h.indexOf('Fecha')] || '', operador: r[h.indexOf('Operador')] || '' } : null;
+  } catch (e) { return null; }
+}
+
+// ── Diésel con foto: vale + tickets (operador o admin) ────
+const DV_VACIO = () => ({ fotos: [], tickets: [], folio: '', fecha: '', importe: 0, precio: 0, litros: 0, litrosComo: '',
+  vehiculo: '', operador: '', tracto: '', km_nuevo: 0, km_ant: 0 });
+const mxn = n => '$' + Number(n).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+async function descargarFoto(fileId) {
+  const r = await fetch(await bot.getFileLink(fileId));
+  if (!r.ok) throw new Error(`Telegram respondió ${r.status} al bajar la foto`);
+  return Buffer.from(await r.arrayBuffer());
+}
+
+async function iniciarVale(chatId, silencioso = false) {
+  const datos = DV_VACIO();
+  if (!isAdmin(chatId)) {
+    const op = (await getOperadores())[String(chatId)];
+    if (!op) { bot.sendMessage(chatId, '❌ No estás registrado.\nUsa /registrar NOMBRE TRACTO'); return false; }
+    datos.operador = op.nombre; datos.tracto = op.tracto;
+  }
+  await setEstado(chatId, { estado: 'dv', fase: 'fotos', datos });
+  if (!silencioso) {
+    bot.sendMessage(chatId,
+      `⛽ *Reportar diésel*${datos.tracto ? ' — Tracto #' + datos.tracto : ''}\n\n📸 Manda la *foto del vale* (papel rosa) y la de los *tickets* de la gasolinera, una por una.\nCuando termines escribe *listo*`,
+      { parse_mode:'Markdown', ...BTN_CANCELAR });
+  }
+  return true;
+}
+
+/** Lee la foto, junta los datos en el estado y avisa qué entendió. Regresa true si la foto se guardó. */
+async function procesarFotoVale(chatId, st, fileId) {
+  const d = st.datos;
+  let l = null;
+  if (vale.disponible()) {
+    try { l = await vale.leer(await descargarFoto(fileId)); }
+    catch (e) {
+      console.error('Lectura de foto:', e.message);
+      bot.sendMessage(chatId, '⚠️ No pude leer esa foto automáticamente. La guardo y al final te pregunto los datos.');
+    }
+  }
+  if (l && l.calidad === 'ilegible') {
+    bot.sendMessage(chatId, '📸 Esa foto salió *borrosa o ilegible* y no pude leerla.\n\nTómala otra vez con más luz, bien enfocada y completa, y mándala de nuevo.', { parse_mode:'Markdown' });
+    return false;
+  }
+  if (l && l.tipo === 'otro') {
+    bot.sendMessage(chatId, '🤔 Eso no parece un vale ni un ticket de diésel. Manda la foto del vale (papel rosa) o del ticket de la gasolinera.');
+    return false;
+  }
+  const dudas = [];
+  let resp = '📸 Foto guardada.';
+  if (l && l.tipo === 'ticket') {
+    const id = l.ticket || `t${d.tickets.length + 1}`;
+    if (d.tickets.some(t => t.ticket === id)) {
+      bot.sendMessage(chatId, 'ℹ️ Ese ticket ya lo había leído. Sigue con otra foto o escribe *listo*.', { parse_mode:'Markdown' });
+      return false;
+    }
+    if (l.litros) d.tickets.push({ ticket: id, litros: l.litros, importe: l.importe || 0 }); else dudas.push('los litros');
+    if (l.precio_litro) d.precio = l.precio_litro;
+    if (!d.fecha && l.fecha) d.fecha = l.fecha;
+    resp = `🎫 *Ticket leído*\nLitros: ${l.litros || '❓'}\nPrecio: ${l.precio_litro ? mxn(l.precio_litro) + ' por litro' : '❓'}\nTotal: ${l.importe ? mxn(l.importe) : '❓'}`;
+    d.fotos.push(fileId);
+  } else if (l && l.tipo === 'vale') {
+    if (l.folio) d.folio = l.folio; else dudas.push('el número de folio');
+    if (l.fecha) d.fecha = l.fecha; else dudas.push('la fecha');
+    if (l.importe) d.importe = l.importe; else dudas.push('el importe en pesos');
+    if (l.vehiculo) d.vehiculo = l.vehiculo;
+    resp = `🧾 *Vale leído*\nFolio: ${l.folio || '❓'}\nFecha: ${l.fecha ? isoAMx(l.fecha) : '❓'}\nImporte: ${l.importe ? mxn(l.importe) : '❓'}`;
+    d.fotos.unshift(fileId);                                  // la foto del vale va primero
+  } else {
+    d.fotos.push(fileId);
+  }
+  if (dudas.length) resp += `\n\n⚠️ No se alcanza a leer bien: ${dudas.join(', ')}.\nPuedes mandarla de nuevo más clara; si no, sigo y te lo pregunto al final.`;
+  resp += `\n\nSigue mandando fotos o escribe *listo*.`;
+  bot.sendMessage(chatId, resp, { parse_mode:'Markdown' });
+  return true;
+}
+
+/** litros del vale = importe del vale ÷ precio por litro; si no hay vale, la suma de los tickets */
+function calcularLitros(d) {
+  if (d.importe > 0 && d.precio > 0) return { litros: +(d.importe / d.precio).toFixed(3), como: `${mxn(d.importe)} ÷ ${mxn(d.precio)} por litro` };
+  const t = d.tickets.reduce((a, x) => a + x.litros, 0);
+  if (t > 0) return { litros: +t.toFixed(3), como: `suma de ${d.tickets.length} ticket(s)` };
+  return null;
+}
+
+/** Avisa de inmediato si el folio ya se registró (evita capturar dos veces la misma carga). */
+async function esDuplicadoVale(chatId, d) {
+  if (!d.folio) return false;
+  const dup = await valeRegistrado(d.folio);
+  if (!dup) return false;
+  await clearEstado(chatId);
+  bot.sendMessage(chatId, `⚠️ El vale *#${d.folio}* ya está registrado (${dup.fecha}, ${dup.operador}). No lo guardé para evitar duplicados.\n\nSi es otra carga con el mismo número, avisa a Fabiola.`,
+    { parse_mode:'Markdown', ...(isAdmin(chatId) ? MENU_ADMIN : MENU_OP) });
+  return true;
+}
+
+async function cerrarFotosVale(chatId, st) {
+  const d = st.datos;
+  if (d.fotos.length === 0) return bot.sendMessage(chatId, '📸 Primero manda la foto del vale (y los tickets).');
+  if (await esDuplicadoVale(chatId, d)) return;
+  const c = calcularLitros(d);
+  if (c && !(d.litrosComo === 'capturado a mano')) { d.litros = c.litros; d.litrosComo = c.como; }
+  await avanzarVale(chatId, st);
+}
+
+const faltanteVale = d => !d.tracto ? 'operador' : !d.folio ? 'folio' : !d.fecha ? 'fecha' : !(d.litros > 0) ? 'litros' : !(d.km_nuevo > 0) ? 'km_nuevo' : null;
+const PREG_VALE = {
+  folio:    '🔢 No pude leer el *número de vale (folio)*. ¿Cuál es?',
+  fecha:    '📅 ¿Fecha de la carga?\nToca "Hoy" o escribe la fecha (20/Abr o 20/04/2026)',
+  litros:   '⛽ No pude sacar los litros. ¿Cuántos litros fueron *en total* en el vale?',
+  km_nuevo: '📏 ¿Kilometraje actual del odómetro?',
+};
+
+async function avanzarVale(chatId, st) {
+  const f = faltanteVale(st.datos);
+  if (!f) return irRevisionVale(chatId, st);
+  st.estado = 'dv'; st.fase = 'preguntas'; st.preg = f;
+  await setEstado(chatId, st);
+  if (f === 'operador') {
+    const botones = Object.values(await getOperadores()).map(o => [{ text: `${o.nombre} — Tracto #${o.tracto}`, callback_data: `dv_op_${o.chatId}` }]);
+    botones.push([{ text: '❌ Cancelar', callback_data: 'cancelar' }]);
+    return bot.sendMessage(chatId, '👤 ¿De qué operador es esta carga?', { reply_markup: { inline_keyboard: botones } });
+  }
+  bot.sendMessage(chatId, PREG_VALE[f], { parse_mode:'Markdown', ...(f === 'fecha' ? BTN_HOY : BTN_CANCELAR) });
+}
+
+async function responderPreguntaVale(chatId, st, texto) {
+  const d = st.datos, f = st.preg;
+  let ok = true;
+  if (f === 'operador') return bot.sendMessage(chatId, 'Toca el nombre del operador 👆');
+  if (f === 'folio') { if (/^\d{3,10}$/.test(texto)) { d.folio = texto; if (await esDuplicadoVale(chatId, d)) return; } else ok = false; }
+  else if (f === 'fecha') {
+    const ser = texto.toLowerCase() === 'hoy' ? dashboard.hoyMX() : dashboard.parseFecha(texto);
+    if (ser == null || ser > dashboard.hoyMX()) ok = false; else d.fecha = dashboard.serialAISO(ser);
+  } else if (f === 'litros' || f === 'km_nuevo') {
+    if (esNumero(texto) && toNum(texto) > 0) { d[f] = toNum(texto); if (f === 'litros') d.litrosComo = 'capturado a mano'; } else ok = false;
+  }
+  if (!ok) bot.sendMessage(chatId, '❌ No entendí ese dato, intenta de nuevo.');
+  await avanzarVale(chatId, st);
+}
+
+async function irRevisionVale(chatId, st) {
+  const d = st.datos;
+  d.km_ant = await ultimoKm(d.tracto);
+  st.fase = 'revision'; await setEstado(chatId, st);
+  const dif  = d.km_ant > 0 ? +(d.km_nuevo - d.km_ant).toFixed(1) : 0;
+  const rend = dif > 0 && d.litros > 0 ? (dif / d.litros).toFixed(2) : '—';
+  let t = `📋 *Revisa la carga de diésel:*\n\n👤 ${d.operador} — Tracto #${d.tracto}\n🧾 Vale:       ${d.folio}\n📅 Fecha:      ${isoAMx(d.fecha)}\n` +
+          `⛽ Litros:     ${d.litros}${d.litrosComo ? ' (' + d.litrosComo + ')' : ''}\n` +
+          `📏 KM anterior: ${d.km_ant > 0 ? d.km_ant : 'no encontrado'}\n📏 KM actual:  ${d.km_nuevo}\n🛣️ Recorridos: ${dif > 0 ? dif : '—'}\n` +
+          `📈 Rendimiento: ${rend} km/lt\n📸 Fotos: ${d.fotos.length}\n`;
+  if (d.km_ant > 0 && d.km_nuevo <= d.km_ant) t += `\n⚠️ *El kilometraje es menor o igual al de la carga anterior (${d.km_ant}).* Si te equivocaste, toca Repetir.\n`;
+  if (rend !== '—' && (parseFloat(rend) < 1.2 || parseFloat(rend) > 4)) t += `\n⚠️ *Rendimiento fuera de lo normal.* Revisa kilometraje y litros.\n`;
+  if (dashboard.hoyMX() - dashboard.parseFecha(d.fecha) > 45) t += `\n⚠️ *La fecha tiene más de 45 días.* Revísala.\n`;
+  t += `\n¿Todo correcto?`;
+  bot.sendMessage(chatId, t, { parse_mode:'Markdown', ...MENU_CONFIRM_DV });
+}
+
+// Flujo del admin (registrar diésel de cualquier operador)
+async function guardarDiesel(chatId, fotoFileId, d) {
+  await clearEstado(chatId);
+  try {
+    const r = await registrarDiesel({ fechaISO: hoyISO(), vale: d.vale, operador: d.operador, tracto: d.tracto,
+      km_nuevo: toNum(d.km_nuevo), km_ant: toNum(d.km_ant), litros: toNum(d.litros), foto: fotoFileId || '' });
+    bot.sendMessage(chatId, `⛽ *Diésel registrado* ✅\n\nOperador: ${d.operador}\nTracto: #${d.tracto}\nKM recorridos: ${r.difKM}\nRendimiento: ${r.rend} km/lt\nVale: #${d.vale}${r.tabTracto ? '\n📗 Guardado en ' + r.tabTracto : ''}`, { parse_mode:'Markdown', ...MENU_ADMIN });
+    if (fotoFileId) notificarAdminsFoto(fotoFileId, `⛽ Vale — ${d.operador} | Tracto #${d.tracto} | ${isoAMx(hoyISO())}`);
+    notificarAdmins(`⛽ *Diésel* — ${d.operador} | Tracto #${d.tracto} | KM: ${r.difKM} | ${r.rend} km/lt | Vale #${d.vale}`, { parse_mode:'Markdown' });
+  } catch (e) {
     console.error('Error guardando diesel:', e.message);
     bot.sendMessage(chatId, '⚠️ Error guardando diésel.', MENU_ADMIN);
-    return;
   }
-  bot.sendMessage(chatId, `⛽ *Diésel registrado* ✅\n\nOperador: ${d.operador}\nTracto: #${d.tracto}\nKM recorridos: ${difKM}\nRendimiento: ${rend} km/lt\nVale: #${d.vale}`, { parse_mode:'Markdown', ...MENU_ADMIN });
-  if (fotoFileId) notificarAdminsFoto(fotoFileId, `⛽ Vale — ${d.operador} | Tracto #${d.tracto} | ${fecha}`);
-  notificarAdmins(`⛽ *Diésel* — ${d.operador} | Tracto #${d.tracto} | KM: ${difKM} | ${rend} km/lt | Vale #${d.vale}`, { parse_mode:'Markdown' });
 }
- 
+
 // ── ERRORES GLOBALES ──────────────────────────────────────
 bot.on('error', e => console.error('Bot error:', e.message));
 process.on('uncaughtException',  e => console.error('uncaughtException:', e.message));
@@ -931,11 +1281,29 @@ app.get('/api/admin/diesel', async (req, res) => {
       kmRecorridos: parseFloat(r[col('KM Recorridos')]) || 0,
       litros:       parseFloat(r[col('Litros')])        || 0,
       rendimiento:  r[col('Rendimiento km/lt')]     || '—',
+      foto:         r[col('Foto')]                  || '',
     })).reverse();
     res.json({ ok: true, diesel });
   } catch (e) {
     console.error('Error API diesel:', e.message);
     res.json({ ok: false, error: e.message });
+  }
+});
+
+// Sirve la foto del vale guardada en Telegram (solo con el token del panel)
+app.get('/api/admin/foto', async (req, res) => {
+  if (req.query.token !== (process.env.DASHBOARD_TOKEN || 'regis2024')) return res.status(401).send('No autorizado');
+  const id = String(req.query.id || '');
+  if (!/^[A-Za-z0-9_-]{10,250}$/.test(id)) return res.status(400).send('Foto inválida');
+  try {
+    const url = await bot.getFileLink(id);
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Telegram respondió ${r.status}`);
+    res.set({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=86400' });
+    res.send(Buffer.from(await r.arrayBuffer()));
+  } catch (e) {
+    console.error('Error API foto:', e.message);
+    res.status(404).send('Foto no disponible');
   }
 });
 
@@ -979,6 +1347,7 @@ app.get('/api/admin/semanal', async (req, res) => {
 app.listen(PORT, async () => {
   console.log(`🚛 Servidor en puerto ${PORT}`);
   console.log(`👥 Admins: ${ADMIN_IDS.length} — ${ADMIN_IDS.join(', ')}`);
+  console.log(vale.disponible() ? '🔎 Lectura automática de vales: ACTIVA' : '🔎 Lectura automática de vales: desactivada (falta ANTHROPIC_API_KEY)');
   try {
     dashboard.programar({ bot, chatIds: ADMIN_IDS, getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB, panelUrl: panelUrl(), expr: DASH_CRON });
   } catch (e) { console.error('❌ No se pudo programar el resumen semanal:', e.message); }
