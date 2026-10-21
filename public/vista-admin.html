@@ -547,9 +547,9 @@
           <span class="count" id="countDiesel"></span>
         </div>
 
-        <div class="table-wrap">
+        <div class="table-wrap compact" style="overflow-x:auto;">
           <table>
-            <thead><tr><th>Fecha</th><th>Vale</th><th>Operador</th><th>Tracto</th><th>KM anterior</th><th>KM nuevo</th><th>KM recorridos</th><th>Litros</th><th>Rendimiento</th></tr></thead>
+            <thead><tr><th>Fecha</th><th>Vale</th><th>Operador</th><th>Tracto</th><th>KM anterior</th><th>KM nuevo</th><th>KM recorridos</th><th>Litros</th><th>Rendimiento</th><th>Foto</th></tr></thead>
             <tbody id="lista-diesel"></tbody>
           </table>
           <div class="pagination" id="pagDiesel"></div>
@@ -1123,7 +1123,7 @@ function renderDiesel(){
   const pageRows = rows.slice(start, start+PAGE_SIZE);
 
   document.getElementById('lista-diesel').innerHTML = pageRows.length===0
-    ? `<tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:40px;">No hay registros de diésel todavía.</td></tr>`
+    ? `<tr><td colspan="10" style="text-align:center; color:var(--text-muted); padding:40px;">No hay registros de diésel todavía.</td></tr>`
     : pageRows.map(d=>`<tr>
         <td>${esc(d.fecha)}</td>
         <td class="cell-muted">#${esc(d.vale)}</td>
@@ -1134,6 +1134,7 @@ function renderDiesel(){
         <td>${d.kmRecorridos.toLocaleString('es-MX')}</td>
         <td>${d.litros}</td>
         <td class="cell-strong">${esc(d.rendimiento)} km/lt</td>
+        <td>${d.foto ? d.foto.split('|').map((f,i)=>`<a href="/api/admin/foto?token=${encodeURIComponent(TOKEN)}&id=${encodeURIComponent(f)}" target="_blank" rel="noopener" class="badge blue" style="text-decoration:none; margin-right:4px">📷 ${i+1}</a>`).join('') : '<span class="cell-muted">—</span>'}</td>
       </tr>`).join('');
 
   renderPagination('pagDiesel', rows.length, pageDiesel, p=>{ pageDiesel=p; renderDiesel(); });
