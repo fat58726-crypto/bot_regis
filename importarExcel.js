@@ -84,6 +84,9 @@ async function importarExcel({ buffer, getSheets, spreadsheetId, tab }) {
 
 
 // ── Excel de RENDIMIENTOS (una pestaña ECO#NN por tractor) ───────────
+// Fórmulas SIN separadores de argumentos: valen igual en hojas con coma o con punto y coma (según el idioma de la hoja).
+const fDif  = r => `=(D${r}-E${r})*(E${r}<>"")`;
+const fRend = r => `=IFERROR((D${r}-E${r})/G${r}*(E${r}<>""))`;
 const esHojaEco = nombre => /^ECO\s*#/i.test(String(nombre).trim());
 
 /** 'rendimientos' si el libro trae pestañas ECO#NN; si no, 'gastos' */
@@ -122,8 +125,8 @@ async function importarRendimientos({ buffer, getSheets, spreadsheetId }) {
       const fila = [];
       for (let c = 1; c <= 10; c++) fila.push(valorCelda(ws.getRow(r).getCell(c)) ?? '');
       if (r >= 3 && fila[0] !== '') {
-        fila[5] = `=IF(E${r}="","",D${r}-E${r})`;
-        fila[7] = `=IF(OR(E${r}="",G${r}=0),"",(D${r}-E${r})/G${r})`;
+        fila[5] = fDif(r);
+        fila[7] = fRend(r);
       } else if (r >= 3) { fila[5] = ''; fila[7] = ''; }
       mat.push(fila);
     }
@@ -138,4 +141,4 @@ async function importarRendimientos({ buffer, getSheets, spreadsheetId }) {
   return { creadas, omitidas, filas: filasTotal };
 }
 
-module.exports = { importarExcel, extraerGastos, detectarTipo, importarRendimientos };
+module.exports = { importarExcel, extraerGastos, detectarTipo, importarRendimientos, fDif, fRend };

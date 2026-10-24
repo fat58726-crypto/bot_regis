@@ -6,7 +6,7 @@ const express     = require('express');
 const path        = require('path');
 const dashboard   = require('./dashboard');
 const vale        = require('./vale');
-const { importarExcel, detectarTipo, importarRendimientos } = require('./importarExcel');
+const { importarExcel, detectarTipo, importarRendimientos, fDif, fRend } = require('./importarExcel');
  
 const TOKEN       = process.env.BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
@@ -818,6 +818,32 @@ bot.onText(/\/semanal/, async (msg) => {
   }
 });
 
+// Repara las fórmulas de diferencia y rendimiento en todas las hojas ECO#NN (si quedaron con #ERROR!)
+bot.onText(/\/arreglarformulas/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return;
+  try {
+    const tabs = (await tabsDiesel()).filter(t => /^ECO\s*#/i.test(t.trim()));
+    const data = [];
+    let filas = 0;
+    for (const t of tabs) {
+      const res = await getSheets().spreadsheets.values.get({ spreadsheetId: SHEET_DIESEL, range: `${qTab(t)}!A1:A2000` });
+      (res.data.values || []).forEach((r, i) => {
+        if (i < 2 || r[0] === undefined || String(r[0]).trim() === '') return;
+        const n = i + 1;
+        data.push({ range: `${qTab(t)}!F${n}`, values: [[fDif(n)]] }, { range: `${qTab(t)}!H${n}`, values: [[fRend(n)]] });
+        filas++;
+      });
+    }
+    if (!data.length) return bot.sendMessage(chatId, 'No encontré filas con datos en las hojas ECO#.');
+    await getSheets().spreadsheets.values.batchUpdate({ spreadsheetId: SHEET_DIESEL, resource: { valueInputOption: 'USER_ENTERED', data } });
+    bot.sendMessage(chatId, `✅ Fórmulas corregidas en ${tabs.length} hoja(s), ${filas} fila(s).`);
+  } catch (e) {
+    console.error('Error /arreglarformulas:', e.message);
+    bot.sendMessage(chatId, `⚠️ No pude corregirlas: ${e.message}`);
+  }
+});
+
 // El admin manda GASTOS_2026.xlsx al bot → se carga a BASE_EXCEL → se manda el resumen semanal.
 bot.on('document', async (msg) => {
   const chatId = msg.chat.id;
@@ -903,6 +929,15 @@ const esTabDelTracto = (titulo, tracto) => {
   return !!m && Number(m[1]) === Number(tracto);
 };
 
+/** Como getRows, pero con números reales (sin coma decimal regional) y fechas ya con formato. */
+async function getRowsRaw(sheetId, tab) {
+  const res = await getSheets().spreadsheets.values.get({
+    spreadsheetId: sheetId, range: `${tab}!A1:Z2000`,
+    valueRenderOption: 'UNFORMATTED_VALUE', dateTimeRenderOption: 'FORMATTED_STRING',
+  });
+  return res.data.values || [];
+}
+
 async function tabsDiesel() {
   const meta = await getSheets().spreadsheets.get({ spreadsheetId: SHEET_DIESEL, fields: 'sheets.properties.title' });
   return meta.data.sheets.map(h => h.properties.title);
@@ -912,7 +947,7 @@ async function tabsDiesel() {
 async function ultimoKm(tracto) {
   let max = 0;
   try {
-    const rows = await getRows(SHEET_DIESEL, 'Diesel');
+    const rows = await getRowsRaw(SHEET_DIESEL, 'Diesel');
     const h = rows[0] || [], iT = h.indexOf('Tracto'), iK = h.indexOf('KM Nuevo');
     if (iT >= 0 && iK >= 0) rows.slice(1).forEach(r => { if (Number(r[iT]) === Number(tracto)) max = Math.max(max, limpio(r[iK])); });
   } catch (e) { console.error('ultimoKm bitácora:', e.message); }
@@ -937,8 +972,7 @@ async function escribirEnHojaTracto({ fechaISO, vale, operador, tracto, km_nuevo
   const f = ultima + 1;
   await updateRow(SHEET_DIESEL, `${qTab(titulo)}!A${f}:I${f}`, [
     fechaISO, Number(vale) || vale, Number(tracto), km_nuevo, km_ant > 0 ? km_ant : '',
-    `=IF(E${f}="","",D${f}-E${f})`, litros,
-    `=IF(OR(E${f}="",G${f}=0),"",(D${f}-E${f})/G${f})`,
+    fDif(f), litros, fRend(f),
     `Reportó ${operador} (Telegram)`,
   ]);
   return titulo;
@@ -952,7 +986,7 @@ async function registrarDiesel({ fechaISO, vale, operador, tracto, km_nuevo, km_
   const rows = await getRows(SHEET_DIESEL, 'Diesel');
   if (rows.length === 0) await appendRow(SHEET_DIESEL, 'Diesel', ['Fecha','Vale','Operador','Tracto','KM Nuevo','KM Anterior','KM Recorridos','Litros','Rendimiento km/lt','Foto']);
   else if (!(rows[0] || []).includes('Foto')) await updateCell(SHEET_DIESEL, 'Diesel!J1', 'Foto');
-  await appendRow(SHEET_DIESEL, 'Diesel', [isoAMx(fechaISO), vale, operador, tracto, km_nuevo, km_ant, difKM, litros, rend, foto || '']);
+  await appendRow(SHEET_DIESEL, 'Diesel', [isoAMx(fechaISO), vale, operador, tracto, km_nuevo, km_ant, difKM, litros, rend === '—' ? '—' : Number(rend), foto || '']);
   // 2) hoja del tracto (si existe). Si falla, la bitácora ya quedó guardada.
   let tabTracto = null;
   try { tabTracto = await escribirEnHojaTracto({ fechaISO, vale, operador, tracto, km_nuevo, km_ant, litros }); }
@@ -969,7 +1003,7 @@ async function asegurarTab(sheetId, titulo) {
 
 async function valeRegistrado(folio) {
   try {
-    const rows = await getRows(SHEET_DIESEL, 'Diesel');
+    const rows = await getRowsRaw(SHEET_DIESEL, 'Diesel');
     const h = rows[0] || [], iV = h.indexOf('Vale');
     if (iV < 0) return null;
     const r = rows.slice(1).find(x => String(x[iV]).trim() === String(folio).trim());
@@ -1268,7 +1302,7 @@ app.get('/api/admin/diesel', async (req, res) => {
   const TOKEN_DASHBOARD = process.env.DASHBOARD_TOKEN || 'regis2024';
   if (req.query.token !== TOKEN_DASHBOARD) return res.status(401).json({ ok: false });
   try {
-    const rows    = await getRows(SHEET_DIESEL, 'Diesel');
+    const rows    = await getRowsRaw(SHEET_DIESEL, 'Diesel');
     const headers = rows[0] || [];
     const col     = (nombre) => headers.findIndex(h => h === nombre);
     const diesel = rows.slice(1).map(r => ({
