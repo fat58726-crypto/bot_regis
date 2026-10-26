@@ -1,12 +1,17 @@
 'use strict';
 /**
  * Lectura automática de vales y tickets de diésel a partir de una foto.
- * Usa la API de Claude (visión). Requiere la variable ANTHROPIC_API_KEY en Railway.
- * Sin esa variable el bot sigue funcionando: guarda la foto y pregunta los datos por texto.
+ * Proveedores (se usa el primero que tenga llave en Railway):
+ *   1) Claude  → variable ANTHROPIC_API_KEY
+ *   2) Gemini  → variable GEMINI_API_KEY
+ * Sin ninguna de las dos el bot sigue funcionando: guarda la foto y pregunta los datos por texto.
  */
 const API = 'https://api.anthropic.com/v1/messages';
 const modelo = () => process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5';
-const disponible = () => !!process.env.ANTHROPIC_API_KEY;
+const GEMINI_API = m => `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`;
+const modelosGemini = () => process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL] : ['gemini-3.5-flash', 'gemini-2.5-flash'];
+const proveedor = () => process.env.ANTHROPIC_API_KEY ? 'Claude' : process.env.GEMINI_API_KEY ? 'Gemini' : null;
+const disponible = () => !!proveedor();
 
 const SISTEMA = `Eres un asistente que lee fotos de comprobantes de diésel de una empresa de transporte en México.
 Recibirás UNA foto. Puede ser:
@@ -73,8 +78,7 @@ function normalizar(o) {
   return r;
 }
 
-/** buffer = bytes de la imagen (JPEG). Lanza error si la API falla. */
-async function leer(buffer, mediaType = 'image/jpeg') {
+async function leerConClaude(buffer, mediaType) {
   const res = await fetch(API, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
@@ -86,10 +90,44 @@ async function leer(buffer, mediaType = 'image/jpeg') {
       ] }],
     }),
   });
-  if (!res.ok) throw new Error(`API de Claude respondió ${res.status}: ${(await res.text()).slice(0, 160)}`);
+  if (!res.ok) throw new Error(`Claude respondió ${res.status}: ${(await res.text()).slice(0, 160)}`);
   const j = await res.json();
-  const txt = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+  return (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+}
+
+async function leerConGemini(buffer, mediaType) {
+  const cuerpo = JSON.stringify({
+    systemInstruction: { parts: [{ text: SISTEMA }] },
+    contents: [{ role: 'user', parts: [
+      { inline_data: { mime_type: mediaType, data: buffer.toString('base64') } },
+      { text: 'Extrae los datos de esta foto.' },
+    ] }],
+    generationConfig: { temperature: 0, responseMimeType: 'application/json', maxOutputTokens: 4096 },
+  });
+  let ultimoError = null;
+  for (const m of modelosGemini()) {                      // si el primer modelo no existe (404), prueba el siguiente
+    const res = await fetch(GEMINI_API(m), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
+      body: cuerpo,
+    });
+    if (res.status === 404) { ultimoError = new Error(`Gemini: el modelo ${m} no existe para tu llave (404)`); continue; }
+    if (!res.ok) throw new Error(`Gemini respondió ${res.status}: ${(await res.text()).slice(0, 160)}`);
+    const j = await res.json();
+    const partes = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
+    const txt = partes.filter(p => p.text && !p.thought).map(p => p.text).join('');
+    if (!txt) throw new Error(`Gemini no devolvió texto${j.promptFeedback && j.promptFeedback.blockReason ? ' (bloqueado: ' + j.promptFeedback.blockReason + ')' : ''}`);
+    return txt;
+  }
+  throw ultimoError || new Error('Gemini: sin modelo disponible');
+}
+
+/** buffer = bytes de la imagen (JPEG). Lanza error si la API falla. */
+async function leer(buffer, mediaType = 'image/jpeg') {
+  const prov = proveedor();
+  if (!prov) throw new Error('No hay ANTHROPIC_API_KEY ni GEMINI_API_KEY');
+  const txt = prov === 'Claude' ? await leerConClaude(buffer, mediaType) : await leerConGemini(buffer, mediaType);
   return normalizar(extraerJSON(txt));
 }
 
-module.exports = { leer, disponible, normalizar, extraerJSON };
+module.exports = { leer, disponible, proveedor, normalizar, extraerJSON };

@@ -1046,7 +1046,7 @@ async function procesarFotoVale(chatId, st, fileId) {
     try { l = await vale.leer(await descargarFoto(fileId)); }
     catch (e) {
       console.error('Lectura de foto:', e.message);
-      bot.sendMessage(chatId, '⚠️ No pude leer esa foto automáticamente. La guardo y al final te pregunto los datos.');
+      bot.sendMessage(chatId, '⚠️ No pude leer esa foto automáticamente. La guardo y al final te pregunto los datos.' + (isAdmin(chatId) ? `\n\n(Detalle para admins: ${String(e.message).slice(0, 160)})` : ''));
     }
   }
   if (l && l.calidad === 'ilegible') {
@@ -1381,7 +1381,7 @@ app.get('/api/admin/semanal', async (req, res) => {
 app.listen(PORT, async () => {
   console.log(`🚛 Servidor en puerto ${PORT}`);
   console.log(`👥 Admins: ${ADMIN_IDS.length} — ${ADMIN_IDS.join(', ')}`);
-  console.log(vale.disponible() ? '🔎 Lectura automática de vales: ACTIVA' : '🔎 Lectura automática de vales: desactivada (falta ANTHROPIC_API_KEY)');
+  console.log(vale.disponible() ? `🔎 Lectura automática de vales: ACTIVA (${vale.proveedor()})` : '🔎 Lectura automática de vales: desactivada (falta ANTHROPIC_API_KEY o GEMINI_API_KEY)');
   try {
     dashboard.programar({ bot, chatIds: ADMIN_IDS, getSheets, spreadsheetId: SHEET_BOT, tab: DASH_TAB, panelUrl: panelUrl(), expr: DASH_CRON });
   } catch (e) { console.error('❌ No se pudo programar el resumen semanal:', e.message); }
