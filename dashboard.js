@@ -51,9 +51,10 @@ function parseFecha(v) {
     const y = +m[3] < 100 ? 2000 + +m[3] : +m[3];
     return dateToSerial(y, +m[2] - 1, +m[1]);
   }
-  if ((m = t.match(/^(\d{1,2})[\/\-\s]([a-z]{3})/))) {            // "20/Abr" sin año → año actual
-    const mes = MESES_ES.indexOf(m[2]);
+  if ((m = t.match(/^(\d{1,2})\s*[\/\-\s]?\s*([a-z]{3,})\.?\s*[\/\-\s]?\s*(\d{4})?/))) {   // "24 junio", "5 /octubre", "22/junio/2026"
+    const mes = MESES_ES.indexOf(m[2].slice(0, 3));
     if (mes < 0) return null;
+    if (m[3]) return dateToSerial(+m[3], mes, +m[1]);
     const hoy = serialToDate(hoyMX());
     let s = dateToSerial(hoy.getUTCFullYear(), mes, +m[1]);
     if (s > hoyMX() + 7) s = dateToSerial(hoy.getUTCFullYear() - 1, mes, +m[1]);
@@ -71,7 +72,7 @@ const normOperador = s => {
 const ALIAS = {
   fecha: ['FECHA', 'FECHADEVIAJES', 'FECHAVIAJE'],
   operador: ['OPERADOR', 'NOMBRE'],
-  destino: ['DESTINO', 'ORIGENDESTINO'],
+  destino: ['DESTINO', 'ORIGENDESTINO', 'LUGAR'],
   dias: ['DIAS'],
   anticipo: ['ANTICIPO'],
   comida: ['COMIDA', 'COMIDAS'],
@@ -113,6 +114,17 @@ function filasAGastos(values) {
     out.push(g);
   }
   return out;
+}
+
+/** BASE_EXCEL + pestaña Cargas (lo que reportan los operadores por el bot). Si BASE_EXCEL ya trae ese día y operador, no se cuenta doble. */
+async function leerTodo(sheets, spreadsheetId, tab) {
+  const gastos = await leerGastos(sheets, spreadsheetId, tab);
+  try {
+    const cargas = await leerGastos(sheets, spreadsheetId, 'Cargas');
+    const yaEstan = new Set(gastos.map(g => g.fecha + '|' + g.operador));
+    for (const c of cargas) if (!yaEstan.has(c.fecha + '|' + c.operador)) gastos.push(c);
+  } catch (e) { console.error('No pude leer la pestaña Cargas:', e.message); }
+  return gastos;
 }
 
 // ── Agregación ───────────────────────────────────────────
@@ -164,11 +176,11 @@ const variacion = (a, p) => (p > 0 ? ((a - p) / p) * 100 : null);
 const flecha = v => (v == null ? '—' : `${v > 0 ? '▲' : v < 0 ? '▼' : '='} ${Math.abs(v).toFixed(0)}%`);
 
 function generarTexto({ actual, previa }) {
-  if (!actual.nViajes) return `📊 <b>Dashboard semanal</b>\n${rangoTexto(actual.ini, actual.fin)}\n\nNo hay gastos registrados en esa semana.`;
+  if (!actual.nViajes) return `📊 <b>Dashboard semanal</b>\n${rangoTexto(actual.ini, actual.ini + 5)}\n\nNo hay gastos registrados en esa semana.`;
   const v = variacion(actual.total, previa.total);
-  let t = `📊 <b>Gasto semanal de operadores</b>\n${rangoTexto(actual.ini, actual.fin)}\n\n` +
+  let t = `📊 <b>Gasto semanal de operadores</b> (gastos y cargas)\n${rangoTexto(actual.ini, actual.ini + 5)}\n\n` +
     `💰 <b>Total: ${money(actual.total)}</b>  (${flecha(v)} vs semana anterior: ${money(previa.total)})\n` +
-    `🚛 Viajes: ${actual.nViajes}\n\n`;
+    `🚛 Viajes y cargas: ${actual.nViajes}\n\n`;
   actual.lista.forEach((o, i) => { t += `${['🥇','🥈','🥉'][i] || '▫️'} ${cap(o.nombre)}: <b>${money(o.total)}</b> · ${o.viajes} viajes\n`; });
   const top = Object.entries(actual.porConcepto).sort((a, b) => b[1] - a[1])[0];
   t += `\n📌 Concepto más alto: ${ETIQ[top[0]]} (${money(top[1])})\n📎 Te mando el dashboard completo en el archivo.`;
@@ -188,9 +200,10 @@ const serialAISO = s => serialToDate(s).toISOString().slice(0, 10);
 
 // ── Datos para el panel (JSON) ───────────────────────────
 /** Semana a mostrar: la pedida; si no, la de hoy; si hoy aún no hay registros, la semana del último dato cargado. */
-function resolverReferencia(gastos, refSerial) {
+function resolverReferencia(gastos, refSerial, estricto) {
   if (refSerial != null) return refSerial;
   const ref = hoyMX();
+  if (estricto) return ref;
   const w = semanaDe(ref);
   if (agregar(gastos, w.ini, w.fin).nViajes || !gastos.length) return ref;
   return Math.max(...gastos.map(g => g.fecha));
@@ -221,7 +234,7 @@ async function datosSemanales({ getSheets, spreadsheetId, tab, ref }) {
   const sheets = getSheets();
   const tabReal = await resolverTab(sheets, spreadsheetId, tab);
   if (!tabReal) return { sinPestana: true };
-  const gastos = await leerGastos(sheets, spreadsheetId, tabReal);
+  const gastos = await leerTodo(sheets, spreadsheetId, tabReal);
   const refSerial = ref ? parseFecha(ref) : null;
   return { tab: tabReal, ...datosParaPanel(gastos, refSerial) };
 }
@@ -231,8 +244,8 @@ async function enviarResumen({ bot, chatIds, getSheets, spreadsheetId, tab, pane
   const sheets = getSheets();
   const tabReal = await resolverTab(sheets, spreadsheetId, tab);
   if (!tabReal) throw new Error('No encuentro la pestaña BASE_EXCEL. Mándame el Excel por este chat y yo la creo.');
-  const gastos = await leerGastos(sheets, spreadsheetId, tabReal);
-  const datos = construirDatos(gastos, resolverReferencia(gastos, refSerial));
+  const gastos = await leerTodo(sheets, spreadsheetId, tabReal);
+  const datos = construirDatos(gastos, resolverReferencia(gastos, refSerial, true));
   let texto = generarTexto(datos);
   texto = texto.replace('📎 Te mando el dashboard completo en el archivo.',
     panelUrl ? `🔗 <a href="${panelUrl}">Abrir dashboard completo en el panel</a>` : '');
