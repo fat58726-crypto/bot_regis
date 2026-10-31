@@ -47,7 +47,7 @@ function parseFecha(v) {
   const t = quitaAcentos(v).trim().toLowerCase();
   let m;
   if ((m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return dateToSerial(+m[1], +m[2] - 1, +m[3]);
-  if ((m = t.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/))) {
+  if ((m = t.match(/^(\d{1,2})\s*[\/\-\.,]\s*(\d{1,2})\s*[\/\-\.,]\s*(\d{2,4})/))) {
     const y = +m[3] < 100 ? 2000 + +m[3] : +m[3];
     return dateToSerial(y, +m[2] - 1, +m[1]);
   }
@@ -103,9 +103,12 @@ function filasAGastos(values) {
   if (col.fecha < 0 || col.operador < 0) throw new Error(`La pestaña necesita columnas FECHA y OPERADOR (encabezados: ${values[0].join(', ')})`);
 
   const out = [];
+  let ultima = null;
   for (const r of values.slice(1)) {
-    const fecha = parseFecha(r[col.fecha]);
+    let fecha = parseFecha(r[col.fecha]);
     const operador = normOperador(r[col.operador]);
+    if (fecha != null) ultima = fecha;
+    else if (operador && ultima != null && r[col.fecha] && CONCEPTOS.some(c => col[c] >= 0 && num(r[col[c]]) > 0)) fecha = ultima;   // fecha mal capturada ("Irapuato", "Local"): usa la de la fila anterior
     if (fecha == null || !operador) continue;     // filas vacías o sin fecha válida
     const g = { fecha, operador, destino: r[col.destino] || '', dias: num(r[col.dias]), anticipo: num(r[col.anticipo]) };
     for (const c of CONCEPTOS) g[c] = col[c] >= 0 ? num(r[col[c]]) : 0;
@@ -116,14 +119,13 @@ function filasAGastos(values) {
   return out;
 }
 
-/** BASE_EXCEL + pestaña Cargas (lo que reportan los operadores por el bot). Si BASE_EXCEL ya trae ese día y operador, no se cuenta doble. */
+/** Suma TODOS los gastos: BASE_EXCEL + pestaña Gastos (viajes del bot) + pestaña Cargas (comida y aguas). Nada se descarta. */
 async function leerTodo(sheets, spreadsheetId, tab) {
   const gastos = await leerGastos(sheets, spreadsheetId, tab);
-  try {
-    const cargas = await leerGastos(sheets, spreadsheetId, 'Cargas');
-    const yaEstan = new Set(gastos.map(g => g.fecha + '|' + g.operador));
-    for (const c of cargas) if (!yaEstan.has(c.fecha + '|' + c.operador)) gastos.push(c);
-  } catch (e) { console.error('No pude leer la pestaña Cargas:', e.message); }
+  for (const extra of ['Gastos', 'Cargas']) {
+    try { gastos.push(...await leerGastos(sheets, spreadsheetId, extra)); }
+    catch (e) { console.error(`No pude leer la pestaña ${extra}:`, e.message); }
+  }
   return gastos;
 }
 
