@@ -81,6 +81,7 @@ const ALIAS = {
   pension: ['PENSION'],
   federales: ['FEDERALES'],
   otros: ['OTROS'],
+  descripcionOtros: ['DESCRIPCIONOTROS', 'DESCOTROS', 'DESCRIPCION'],
   total: ['TOTAL', 'TOTALGASTOS'],
 };
 
@@ -110,7 +111,7 @@ function filasAGastos(values) {
     if (fecha != null) ultima = fecha;
     else if (operador && ultima != null && r[col.fecha] && CONCEPTOS.some(c => col[c] >= 0 && num(r[col[c]]) > 0)) fecha = ultima;   // fecha mal capturada ("Irapuato", "Local"): usa la de la fila anterior
     if (fecha == null || !operador) continue;     // filas vacías o sin fecha válida
-    const g = { fecha, operador, destino: r[col.destino] || '', dias: num(r[col.dias]), anticipo: num(r[col.anticipo]) };
+    const g = { fecha, operador, destino: r[col.destino] || '', dias: num(r[col.dias]), anticipo: num(r[col.anticipo]), descripcionOtros: col.descripcionOtros >= 0 ? String(r[col.descripcionOtros] || '').trim() : '' };
     for (const c of CONCEPTOS) g[c] = col[c] >= 0 ? num(r[col[c]]) : 0;
     const suma = CONCEPTOS.reduce((s, c) => s + g[c], 0);
     g.total = col.total >= 0 && r[col.total] !== undefined && r[col.total] !== '' ? num(r[col.total]) : suma;
@@ -141,9 +142,10 @@ function agregar(gastos, ini, fin) {
   const ops = {};
   const viajes = gastos.filter(g => g.fecha >= ini && g.fecha <= fin);
   for (const g of viajes) {
-    const o = (ops[g.operador] ||= { nombre: g.operador, viajes: 0, anticipo: 0, total: 0, ...Object.fromEntries(CONCEPTOS.map(c => [c, 0])) });
+    const o = (ops[g.operador] ||= { nombre: g.operador, viajes: 0, anticipo: 0, total: 0, descripcionesOtros: [], ...Object.fromEntries(CONCEPTOS.map(c => [c, 0])) });
     o.viajes++; o.anticipo += g.anticipo; o.total += g.total;
     for (const c of CONCEPTOS) o[c] += g[c];
+    if (g.otros > 0 && g.descripcionOtros && !/^ninguno$/i.test(g.descripcionOtros) && !o.descripcionesOtros.includes(g.descripcionOtros)) o.descripcionesOtros.push(g.descripcionOtros);
   }
   const lista = Object.values(ops).sort((a, b) => b.total - a.total);
   lista.forEach(o => { o.saldo = o.anticipo - o.total; });
@@ -183,7 +185,12 @@ function generarTexto({ actual, previa }) {
   let t = `📊 <b>Gasto semanal de operadores</b> (gastos y cargas)\n${rangoTexto(actual.ini, actual.ini + 5)}\n\n` +
     `💰 <b>Total: ${money(actual.total)}</b>  (${flecha(v)} vs semana anterior: ${money(previa.total)})\n` +
     `🚛 Viajes y cargas: ${actual.nViajes}\n\n`;
-  actual.lista.forEach((o, i) => { t += `${['🥇','🥈','🥉'][i] || '▫️'} ${cap(o.nombre)}: <b>${money(o.total)}</b> · ${o.viajes} viajes\n`; });
+  actual.lista.forEach((o, i) => {
+    const detalle = CONCEPTOS.filter(c => o[c] > 0).map(c => `${ETIQ[c]} ${money(o[c])}`).join(' · ');
+    t += `${['🥇','🥈','🥉'][i] || '▫️'} <b>${esc(cap(o.nombre))}: ${money(o.total)}</b> · ${o.viajes} viajes\n`;
+    if (detalle) t += `   ${detalle}\n`;
+    if (o.descripcionesOtros.length) t += `   📝 Otros: ${esc(o.descripcionesOtros.join(', '))}\n`;
+  });
   const top = Object.entries(actual.porConcepto).sort((a, b) => b[1] - a[1])[0];
   t += `\n📌 Concepto más alto: ${ETIQ[top[0]]} (${money(top[1])})\n📎 Te mando el dashboard completo en el archivo.`;
   return t;
